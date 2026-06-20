@@ -1,0 +1,160 @@
+/* Linux Lab Guide theme.
+   Dark-first, near-black slate with a single confident cyan accent, to match the
+   portfolio (chweaver.github.io/portfolio) the guide feeds into. Implemented by
+   overriding Starlight's CSS custom properties so the whole docs chrome follows. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --llg-bg: #0a0e14;
+  --llg-bg-elevated: #0f141b;
+  --llg-bg-card: #141b24;
+  --llg-border: #1f2937;
+  --llg-accent: #22d3ee;
+  --llg-accent-dim: #0891b2;
+  --llg-accent-glow: #67e8f9;
+  --llg-ink: #e5e7eb;
+  --llg-ink-dim: #9ca3af;
+  --llg-ink-faint: #6b7280;
+  --llg-green: #10b981;
+  --llg-amber: #f59e0b;
+  --llg-red: #ef4444;
+
+  --sl-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+}
+
+/* Dark theme (the default and the one we polish). */
+:root,
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #06343d;
+  --sl-color-accent: var(--llg-accent);
+  --sl-color-accent-high: #a5f3fc;
+
+  --sl-color-white: #f0f9ff;
+  --sl-color-gray-1: #e5e7eb;
+  --sl-color-gray-2: #c2c8d0;
+  --sl-color-gray-3: #9ca3af;
+  --sl-color-gray-4: #6b7280;
+  --sl-color-gray-5: #2b3442;
+  --sl-color-gray-6: #1f2937;
+  --sl-color-gray-7: #161d27;
+  --sl-color-black: var(--llg-bg);
+
+  --sl-color-bg: var(--llg-bg);
+  --sl-color-bg-nav: rgba(10, 14, 20, 0.85);
+  --sl-color-bg-sidebar: #0c1118;
+  --sl-color-bg-inline-code: #161d27;
+  --sl-color-hairline: var(--llg-border);
+  --sl-color-hairline-light: var(--llg-border);
+  --sl-color-hairline-shade: #131a23;
+  --sl-color-text: var(--llg-ink);
+  --sl-color-text-accent: var(--llg-accent);
+  --sl-color-text-invert: var(--llg-bg);
+}
+
+/* Light theme: supported, kept legible, but not the focus. */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #c7f2fa;
+  --sl-color-accent: #0e7490;
+  --sl-color-accent-high: #134e57;
+  --sl-color-white: #0a0e14;
+  --sl-color-gray-1: #1f2937;
+  --sl-color-gray-2: #374151;
+  --sl-color-gray-3: #4b5563;
+  --sl-color-gray-4: #6b7280;
+  --sl-color-gray-5: #d1d5db;
+  --sl-color-gray-6: #e5e7eb;
+  --sl-color-gray-7: #f3f4f6;
+  --sl-color-black: #ffffff;
+  --sl-color-text-accent: #0e7490;
+}
+
+/* Subtle cyan glow behind the page, echoing the portfolio backdrop. */
+body {
+  background-image:
+    radial-gradient(at 85% -10%, rgba(34, 211, 238, 0.07) 0, transparent 55%),
+    radial-gradient(at 5% 100%, rgba(34, 211, 238, 0.04) 0, transparent 55%);
+  background-attachment: fixed;
+}
+
+/* Site title in the header reads like a terminal prompt. */
+.site-title {
+  font-family: var(--sl-font-mono);
+  letter-spacing: -0.01em;
+}
+
+/* Hero tagline + headings get a touch more presence. */
+.hero h1,
+.content-panel h1,
+.sl-markdown-content h1,
+.sl-markdown-content h2 {
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.25);
+  color: #f0f9ff;
+}
+
+/* Inline code in the cyan accent so commands pop in prose. */
+.sl-markdown-content :not(pre) > code {
+  color: var(--llg-accent-glow);
+  border: 1px solid var(--llg-border);
+}
+
+/* The per-phase status line. Each phase carries a literal `**Status:** <value>`
+   line (parsed by scripts/gen_status.py). We can't select on text in CSS, so the
+   value words are wrapped at authoring time with the status component when extra
+   emphasis is wanted; the bare bold line still renders cleanly on its own. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-family: var(--sl-font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--llg-border);
+  background: var(--llg-bg-elevated);
+  color: var(--llg-ink-dim);
+  vertical-align: middle;
+}
+.status-badge[data-status='done'] {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--llg-green);
+}
+.status-badge[data-status='next'] {
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(34, 211, 238, 0.1);
+  color: var(--llg-accent);
+}
+.status-badge[data-status='planned'] {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--llg-amber);
+}
+
+/* "What this unlocked" closing callout on each lab. */
+.unlocked {
+  margin-top: 2.5rem;
+  border-left: 3px solid var(--llg-accent);
+  background: rgba(34, 211, 238, 0.05);
+  padding: 0.85rem 1.1rem;
+  border-radius: 0 0.5rem 0.5rem 0;
+  font-size: 0.95rem;
+  color: var(--llg-ink-dim);
+}
+.unlocked strong {
+  color: var(--llg-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

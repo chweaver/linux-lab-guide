@@ -1,0 +1,209 @@
+{
+  "generatedAt": "2026-06-20T20:13:08.755913+00:00",
+  "guideBaseUrl": "https://chweaver.github.io/linux-lab-guide/",
+  "summary": {
+    "totalLabs": 4,
+    "labsComplete": 0,
+    "totalPhases": 19,
+    "phasesDone": 0,
+    "phasesNext": 0,
+    "phasesPlanned": 19,
+    "overallPct": 0
+  },
+  "labs": [
+    {
+      "id": "ssh",
+      "title": "SSH Hardening + Key Auth",
+      "order": 1,
+      "path": "labs/01-ssh-hardening/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 4,
+      "phasesDone": 0
+    },
+    {
+      "id": "samba",
+      "title": "Samba File Server, Domain-Joined",
+      "order": 2,
+      "path": "labs/02-samba-domain/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    },
+    {
+      "id": "bind9",
+      "title": "Local DNS with BIND9",
+      "order": 3,
+      "path": "labs/03-bind9-dns/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    },
+    {
+      "id": "rsync",
+      "title": "Backup Automation with rsync + cron",
+      "order": 4,
+      "path": "labs/04-rsync-backups/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    }
+  ],
+  "phases": [
+    {
+      "id": "ssh-p1",
+      "labId": "ssh",
+      "labTitle": "SSH Hardening + Key Auth",
+      "title": "Phase A: Key-based authentication",
+      "status": "planned",
+      "anchor": "phase-a-key-based-authentication"
+    },
+    {
+      "id": "ssh-p2",
+      "labId": "ssh",
+      "labTitle": "SSH Hardening + Key Auth",
+      "title": "Phase B: Harden sshd",
+      "status": "planned",
+      "anchor": "phase-b-harden-sshd"
+    },
+    {
+      "id": "ssh-p3",
+      "labId": "ssh",
+      "labTitle": "SSH Hardening + Key Auth",
+      "title": "Phase C: Firewall and fail2ban",
+      "status": "planned",
+      "anchor": "phase-c-firewall-and-fail2ban"
+    },
+    {
+      "id": "ssh-p4",
+      "labId": "ssh",
+      "labTitle": "SSH Hardening + Key Auth",
+      "title": "Phase D: Validation",
+      "status": "planned",
+      "anchor": "phase-d-validation"
+    },
+    {
+      "id": "samba-p1",
+      "labId": "samba",
+      "labTitle": "Samba File Server, Domain-Joined",
+      "title": "Phase A: Prerequisites (these must pass before you join)",
+      "status": "planned",
+      "anchor": "phase-a-prerequisites-these-must-pass-before-you-join"
+    },
+    {
+      "id": "samba-p2",
+      "labId": "samba",
+      "labTitle": "Samba File Server, Domain-Joined",
+      "title": "Phase B: Kerberos and Samba configuration",
+      "status": "planned",
+      "anchor": "phase-b-kerberos-and-samba-configuration"
+    },
+    {
+      "id": "samba-p3",
+      "labId": "samba",
+      "labTitle": "Samba File Server, Domain-Joined",
+      "title": "Phase C: Join the domain",
+      "status": "planned",
+      "anchor": "phase-c-join-the-domain"
+    },
+    {
+      "id": "samba-p4",
+      "labId": "samba",
+      "labTitle": "Samba File Server, Domain-Joined",
+      "title": "Phase D: Create a share with AD-based permissions",
+      "status": "planned",
+      "anchor": "phase-d-create-a-share-with-ad-based-permissions"
+    },
+    {
+      "id": "samba-p5",
+      "labId": "samba",
+      "labTitle": "Samba File Server, Domain-Joined",
+      "title": "Phase E: Validation (from WS01)",
+      "status": "planned",
+      "anchor": "phase-e-validation-from-ws01"
+    },
+    {
+      "id": "bind9-p1",
+      "labId": "bind9",
+      "labTitle": "Local DNS with BIND9",
+      "title": "Phase A: Install and base options",
+      "status": "planned",
+      "anchor": "phase-a-install-and-base-options"
+    },
+    {
+      "id": "bind9-p2",
+      "labId": "bind9",
+      "labTitle": "Local DNS with BIND9",
+      "title": "Phase B: Conditional forward for the AD domain",
+      "status": "planned",
+      "anchor": "phase-b-conditional-forward-for-the-ad-domain"
+    },
+    {
+      "id": "bind9-p3",
+      "labId": "bind9",
+      "labTitle": "Local DNS with BIND9",
+      "title": "Phase C: Authoritative zone for the Linux subdomain",
+      "status": "planned",
+      "anchor": "phase-c-authoritative-zone-for-the-linux-subdomain"
+    },
+    {
+      "id": "bind9-p4",
+      "labId": "bind9",
+      "labTitle": "Local DNS with BIND9",
+      "title": "Phase D: Firewall, SELinux, and start",
+      "status": "planned",
+      "anchor": "phase-d-firewall-selinux-and-start"
+    },
+    {
+      "id": "bind9-p5",
+      "labId": "bind9",
+      "labTitle": "Local DNS with BIND9",
+      "title": "Phase E: Validation",
+      "status": "planned",
+      "anchor": "phase-e-validation"
+    },
+    {
+      "id": "rsync-p1",
+      "labId": "rsync",
+      "labTitle": "Backup Automation with rsync + cron",
+      "title": "Phase A: Backup user and a locked-down key",
+      "status": "planned",
+      "anchor": "phase-a-backup-user-and-a-locked-down-key"
+    },
+    {
+      "id": "rsync-p2",
+      "labId": "rsync",
+      "labTitle": "Backup Automation with rsync + cron",
+      "title": "Phase B: The backup script",
+      "status": "planned",
+      "anchor": "phase-b-the-backup-script"
+    },
+    {
+      "id": "rsync-p3",
+      "labId": "rsync",
+      "labTitle": "Backup Automation with rsync + cron",
+      "title": "Phase C: Run it safely",
+      "status": "planned",
+      "anchor": "phase-c-run-it-safely"
+    },
+    {
+      "id": "rsync-p4",
+      "labId": "rsync",
+      "labTitle": "Backup Automation with rsync + cron",
+      "title": "Phase D: Schedule it",
+      "status": "planned",
+      "anchor": "phase-d-schedule-it"
+    },
+    {
+      "id": "rsync-p5",
+      "labId": "rsync",
+      "labTitle": "Backup Automation with rsync + cron",
+      "title": "Phase E: Validation (the part that actually matters)",
+      "status": "planned",
+      "anchor": "phase-e-validation-the-part-that-actually-matters"
+    }
+  ]
+}

@@ -1,0 +1,315 @@
+---
+title: Samba File Server, Domain-Joined
+description: Join an Ubuntu Samba server to the corp.lab Active Directory domain so it authenticates Windows users against AD, then publish a share with AD-based permissions. The direct bridge from Linux into a Windows shop.
+labId: samba
+labOrder: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `ubuntu-base` (Ubuntu Server 24.04, `192.168.100.10`, LAN). **Joins:** `corp.lab` via `DC01` (`192.168.100.5`).
+
+## Objective
+
+Stand up a Samba file server that authenticates users against Active Directory instead of local accounts, then share a folder whose access is controlled by an AD group. When you are done, a domain user double-clicks `\\\\192.168.100.10\\Share` from their Windows desktop and it just works, with the same credentials they use everywhere else.
+
+**Why it matters for an MSP:** this is how Linux earns a seat in a Windows shop. Clients do not want a separate set of file-server passwords, they want their AD identity to follow them. A domain-joined Samba box gives you cheap, reliable file storage that fits the identity layer the business already runs. It is also the single best exercise for understanding the DNS, Kerberos, and time dependencies that AD quietly relies on.
+
+**Prerequisites:**
+
+- [Lab 1](/linux-lab-guide/labs/01-ssh-hardening/) done (you administer this box over hardened SSH).
+- A healthy `corp.lab` domain with `DC01` at `192.168.100.5` (from the [AD lab](https://chweaver.github.io/ad-lab-guide/)).
+- Domain `Administrator` credentials to perform the join.
+- A snapshot named `pre-domain-join`.
+
+## Phase A: Prerequisites (these must pass before you join)
+
+**Status:** Not started.
+
+A domain join fails for three boring reasons more than any other: wrong hostname, DNS not pointed at the DC, and clock skew. Fix all three first.
+
+### Set the FQDN and a hosts entry
+
+```bash
+sudo hostnamectl set-hostname ubuntu-base.corp.lab
+```
+
+Add a matching line to `/etc/hosts` so the box can always resolve its own fully qualified name, even if DNS hiccups:
+
+```text title="/etc/hosts" {3}
+127.0.0.1   localhost
+127.0.1.1   ubuntu-base.corp.lab ubuntu-base
+192.168.100.10 ubuntu-base.corp.lab ubuntu-base
+```
+
+The FQDN matters because Kerberos and the machine account are tied to the host's full name, not its short name.
+
+### Point DNS at the domain controller
+
+AD is glued together by DNS: the join process looks up SRV records (`_ldap._tcp.corp.lab`, `_kerberos._tcp.corp.lab`) that only the AD DNS server publishes. Public resolvers know nothing about them, so the resolver must be `DC01`.
+
+On Ubuntu with netplan, set the nameserver on your interface:
+
+```yaml title="/etc/netplan/01-netcfg.yaml" {6,7}
+network:
+  version: 2
+  ethernets:
+    ens33:
+      addresses: [192.168.100.10/24]
+      gateway4: 192.168.100.1
+      nameservers:
+        addresses: [192.168.100.5]
+        search: [corp.lab]
+```
+
+```bash
+sudo netplan apply
+```
+
+Verify the DC answers for the domain (this is the single most important check in the lab):
+
+```bash
+dig +short dc01.corp.lab
+dig +short -t SRV _ldap._tcp.corp.lab
+```
+
+Expected: `192.168.100.5`, and an SRV record pointing at `dc01.corp.lab`. If those are empty, stop, nothing past here will work.
+
+<Aside type="tip" title="Why this matters">
+Once [Lab 3](/linux-lab-guide/labs/03-bind9-dns/) is built, you can point this resolver at `rocky-base` instead, and BIND9 will conditionally forward `corp.lab` to `DC01` while resolving everything else itself. For now, point straight at the DC.
+</Aside>
+
+### Sync time to the DC (Kerberos demands it)
+
+Kerberos tickets carry timestamps and are rejected if the client and the KDC disagree by more than about 5 minutes. Install `chrony` and sync to the DC, which is also your time source:
+
+```bash
+sudo apt update
+sudo apt install -y chrony
+```
+
+```ini title="/etc/chrony/chrony.conf" {2}
+# Use the domain controller as the time source
+server dc01.corp.lab iburst prefer
+```
+
+```bash
+sudo systemctl restart chrony
+chronyc sources
+chronyc tracking | grep "System time"
+```
+
+Expected: `dc01.corp.lab` listed as a source with a `*` (selected), and a system-time offset well under a second.
+
+<Aside type="caution" title="Clock skew is the #1 silent join failure">
+If the join later fails with `KRB_AP_ERR_SKEW` or "Clock skew too great", the time is off. It produces no obvious error until the exact moment Kerberos runs, which is why you fix it up front.
+</Aside>
+
+### Install the Samba and Winbind stack
+
+```bash
+sudo apt install -y samba winbind libpam-winbind libnss-winbind krb5-user samba-common-bin
+```
+
+During the `krb5-user` setup prompt, enter the realm in **uppercase**: `CORP.LAB`. Realm case matters to Kerberos.
+
+## Phase B: Kerberos and Samba configuration
+
+**Status:** Not started.
+
+### Configure the Kerberos client
+
+```ini title="/etc/krb5.conf" {2,5-7}
+[libdefaults]
+    default_realm = CORP.LAB
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+
+[realms]
+    CORP.LAB = {
+        kdc = dc01.corp.lab
+        admin_server = dc01.corp.lab
+    }
+
+[domain_realm]
+    .corp.lab = CORP.LAB
+    corp.lab = CORP.LAB
+```
+
+- `default_realm = CORP.LAB`: the realm to assume when none is given. Always uppercase.
+- `kdc` / `admin_server`: where to get tickets and do admin operations, your DC.
+
+Prove Kerberos works before involving Samba:
+
+```bash
+kinit Administrator@CORP.LAB
+klist
+```
+
+`kinit` should accept the domain admin password and return silently. `klist` should then show a `krbtgt/CORP.LAB@CORP.LAB` ticket. If `kinit` fails here, it is DNS, time, or realm case, not Samba.
+
+### Configure Samba as an AD member
+
+Replace the `[global]` section of `/etc/samba/smb.conf`:
+
+```ini title="/etc/samba/smb.conf" {2-4,11-14}
+[global]
+    security = ADS
+    realm = CORP.LAB
+    workgroup = CORP
+
+    winbind use default domain = yes
+    winbind enum users = yes
+    winbind enum groups = yes
+    kerberos method = secrets and keytab
+
+    idmap config * : backend = tdb
+    idmap config * : range = 3000-7999
+    idmap config CORP : backend = rid
+    idmap config CORP : range = 10000-999999
+
+    template shell = /bin/bash
+    template homedir = /home/%U
+```
+
+- `security = ADS`: authenticate against Active Directory using Kerberos (the modern domain-member mode).
+- `realm` / `workgroup`: the Kerberos realm (`CORP.LAB`) and the NetBIOS domain (`CORP`).
+- `winbind use default domain = yes`: lets users log in as `vybz` instead of `CORP\vybz`.
+- `kerberos method = secrets and keytab`: use the machine secret and a keytab for host auth.
+- **idmap** maps AD SIDs to stable POSIX UIDs/GIDs. The `* : tdb` range covers built-in and trusted accounts; the `CORP : rid` backend derives consistent IDs from each user's RID so the same AD user always gets the same UID on every member server. Keep the `*` and `CORP` ranges from overlapping.
+
+### Make the OS resolve domain users via Winbind
+
+Add `winbind` to the `passwd:` and `group:` databases so the Linux user/group lookups consult AD:
+
+```text title="/etc/nsswitch.conf" {1,2}
+passwd:         files systemd winbind
+group:          files systemd winbind
+shadow:         files systemd
+```
+
+This is the line that makes `getent passwd vybz` return a domain user. Without it, Samba authenticates the user but the OS cannot map them to a UID, and access fails in confusing ways.
+
+## Phase C: Join the domain
+
+**Status:** Not started.
+
+With DNS, time, Kerberos, and config all in place, the join itself is one command:
+
+```bash
+sudo net ads join -U Administrator
+```
+
+It authenticates with Kerberos and creates the machine account in AD. Expected output:
+
+```
+Using short domain name -- CORP
+Joined 'UBUNTU-BASE' to dns domain 'corp.lab'
+```
+
+Start and enable the services:
+
+```bash
+sudo systemctl enable --now smbd nmbd winbind
+sudo systemctl restart smbd nmbd winbind
+```
+
+Verify the bridge into AD actually works:
+
+```bash
+wbinfo --ping-dc          # checks the secure channel to the DC
+wbinfo -u | head           # lists domain users
+wbinfo -g | head           # lists domain groups
+getent passwd vybz         # the OS now resolves a domain user to a UID
+```
+
+Expected: `checking the NETLOGON for domain[CORP] dc connection ... succeeded`, real domain users and groups, and a `passwd` line for `vybz` with a UID in the `10000+` range.
+
+## Phase D: Create a share with AD-based permissions
+
+**Status:** Not started.
+
+### Make the directory
+
+```bash
+sudo mkdir -p /srv/samba/share
+sudo chgrp "CORP\\domain users" /srv/samba/share
+sudo chmod 2770 /srv/samba/share
+```
+
+- `chgrp "CORP\domain users"`: own the folder by the AD group (Winbind resolves it to a POSIX GID).
+- `chmod 2770`: owner and group get full access, others get nothing, and the leading `2` sets the setgid bit so new files inherit the folder's group.
+
+### Define the share
+
+Append to `/etc/samba/smb.conf`:
+
+```ini title="/etc/samba/smb.conf"
+[Share]
+    path = /srv/samba/share
+    read only = no
+    valid users = @"CORP\Domain Users"
+    create mask = 0660
+    directory mask = 0770
+    force group = "CORP\Domain Users"
+```
+
+- `valid users = @"CORP\Domain Users"`: only members of that AD group may connect (the `@` means "group"). Swap in a tighter group such as `@"CORP\FileShare-RW"` for real use.
+- `create mask = 0660` / `directory mask = 0770`: the most permissive bits Samba will set on new files and folders, so group members can read and write each other's files while the world is shut out.
+- `force group`: every file created in the share is owned by the AD group, regardless of the creator's primary group, which keeps shared access predictable.
+
+Validate and reload:
+
+```bash
+testparm -s        # parse smb.conf and report errors
+sudo systemctl reload smbd
+```
+
+<Aside type="tip" title="Why this matters">
+Windows clients think in ACLs; Linux thinks in owner/group/other plus masks. The masks and `force group` above are how you translate "everyone in this AD group can collaborate in this folder" into POSIX permissions that behave the way Windows users expect.
+</Aside>
+
+## Phase E: Validation (from WS01)
+
+**Status:** Not started.
+
+### A domain user can read and write
+
+From `WS01` (logged in as a `corp.lab` user), open Explorer and go to:
+
+```text
+\\192.168.100.10\Share
+```
+
+Expected: it opens without a second credential prompt (Windows passes the Kerberos ticket), and you can create, edit, and delete a file.
+
+### A non-member is denied
+
+Add a test user who is **not** in `Domain Users`-with-access (or remove them from the allowed group), and confirm the same path returns access denied. This proves `valid users` is actually enforcing the group, not just decorating the config.
+
+### Permissions and masks behave
+
+Back on `ubuntu-base`, create a file as one user and confirm group ownership and mode:
+
+```bash
+ls -l /srv/samba/share
+```
+
+Expected: new files are group-owned by `domain users` with mode `rw-rw----`, exactly what the masks dictate.
+
+## Troubleshooting
+
+- **`KRB_AP_ERR_SKEW` / clock skew too great:** time is off. Recheck `chronyc tracking`. This is the most common join failure.
+- **`net ads join` cannot find the realm / DNS failure:** the resolver is not `DC01`, or the SRV records do not resolve. Recheck `dig -t SRV _ldap._tcp.corp.lab`.
+- **Join rejected on credentials:** realm case. It must be `CORP.LAB` uppercase in `krb5.conf` and on the `kinit`/`-U Administrator@CORP.LAB` line.
+- **Users authenticate but `getent passwd vybz` is empty:** `winbind` is missing from `/etc/nsswitch.conf`, or `winbind` is not running.
+- **Windows cannot reach the share at all:** a firewall is blocking SMB. Allow `445/tcp` (and `139/tcp` for legacy): `sudo ufw allow Samba`. Also confirm pfSense permits LAN-to-host SMB.
+- **`valid users` group syntax:** domain group names with spaces must be quoted, and the `@` prefix is required for a group (`@"CORP\Domain Users"`).
+
+<Aside type="caution" title="Rollback">
+Leave the domain and back out cleanly: `sudo net ads leave -U Administrator` removes the machine account. Then `sudo systemctl disable --now smbd nmbd winbind`, restore the stock `/etc/samba/smb.conf` and `/etc/nsswitch.conf`, and the box is a plain server again. Or revert the `pre-domain-join` snapshot.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> a Linux file server that lives inside Active Directory, authenticating the same users and groups as every Windows box in the shop. Linux is now a first-class citizen of the domain, not a bolt-on. Next, <a href="/linux-lab-guide/labs/03-bind9-dns/">Lab 3</a> makes Linux resolve that domain on its own terms.
+</div>

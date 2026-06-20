@@ -1,0 +1,349 @@
+---
+title: SSH Hardening + Key Auth
+description: Lock down OpenSSH on Ubuntu the way you would on a client server, key-based auth, a hardened sshd drop-in, ufw, and fail2ban, with a Rocky Linux appendix and a full validation pass.
+labId: ssh
+labOrder: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `ubuntu-base` (Ubuntu Server 24.04, `192.168.100.10`, LAN). Rocky differences are in the [appendix](#appendix-rocky-linux-differences).
+
+## Objective
+
+Turn a default OpenSSH install into a hardened remote-access surface: keys instead of passwords, root login off, a strict `sshd` policy, a host firewall, and automated brute-force banning. This is how you reach a client's Linux boxes, jump hosts, and firewalls without ever putting a reusable password on the wire.
+
+**Why it matters for an MSP:** SSH is the front door to every Linux server, router, and appliance you manage. A weak SSH config is the difference between "a bot is hammering port 22" being a non-event and being a breach. The keys you generate here are also the credential Lab 4 uses for unattended backups, so this lab is the security foundation the rest of the chain stands on.
+
+**Prerequisites:**
+
+- `ubuntu-base` reachable on the LAN at `192.168.100.10` with a sudo-capable user (`vybz` in this lab).
+- A client machine (your workstation, or `rocky-base`) you will SSH *from*.
+- Console or snapshot access to the VM, so a bad config can never lock you out for good.
+
+<Aside type="caution" title="Keep a session open">
+Every change in Phase B can lock you out if you get it wrong. The rule for the whole lab: **keep your current SSH session open, and verify a brand-new session works before you close the first one.** A VMware snapshot named `pre-ssh-hardening` is your seatbelt.
+</Aside>
+
+## Phase A: Key-based authentication
+
+**Status:** Not started.
+
+The goal of this phase is a working key login *before* you touch any server config. You never disable passwords until keys are proven.
+
+### Generate an ed25519 keypair (on the client)
+
+Run this on the machine you connect *from*, not on the server:
+
+```bash
+ssh-keygen -t ed25519 -C "vybz@lab-client"
+```
+
+- `-t ed25519` picks the Ed25519 algorithm. It is faster than RSA, has small keys, and a high security margin. Prefer it over `-t rsa` unless you must talk to something ancient that only speaks RSA (then use `-t rsa -b 4096`).
+- `-C "vybz@lab-client"` sets a comment. It is just a label that lands at the end of the public key, useful for spotting which key is which inside `authorized_keys`.
+
+When prompted for a passphrase, **set one.** A passphrase encrypts the private key at rest, so a stolen laptop does not equal a stolen key. (Lab 4 uses a separate, passphrase-less key for cron; that tradeoff is contained there, not here.)
+
+The keys land in `~/.ssh/`:
+
+```bash
+ls -l ~/.ssh/id_ed25519*
+```
+
+```
+-rw------- 1 vybz vybz  411 Jun 20 09:14 /home/vybz/.ssh/id_ed25519
+-rw-r--r-- 1 vybz vybz   98 Jun 20 09:14 /home/vybz/.ssh/id_ed25519.pub
+```
+
+`id_ed25519` is the **private** key (keep it secret, note the `600` perms). `id_ed25519.pub` is the **public** key you hand out.
+
+<Aside type="tip" title="Why this matters">
+Public-key auth replaces a secret that travels (your password, typed into every session) with a secret that never leaves your client (the private key). The server only ever sees the public key and a signed challenge, so there is no password to sniff, phish, or brute-force.
+</Aside>
+
+### Deploy the public key
+
+The easy way copies the key and fixes permissions for you:
+
+```bash
+ssh-copy-id vybz@192.168.100.10
+```
+
+This appends your public key to `~/.ssh/authorized_keys` on the server and sets the correct ownership and modes. It will prompt for your password this one time (you have not disabled passwords yet).
+
+The manual equivalent, worth knowing for appliances that lack `ssh-copy-id`:
+
+```bash
+# On the server, as the target user:
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+# Paste the contents of id_ed25519.pub on its own line:
+echo "ssh-ed25519 AAAA... vybz@lab-client" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+chown -R "$USER:$USER" ~/.ssh
+```
+
+- `chmod 700 ~/.ssh` and `chmod 600 ~/.ssh/authorized_keys` matter because **sshd refuses keys in a directory or file that is writable by group or others.** Loose perms are silently ignored, which is the classic "my key works but it still asks for a password" symptom.
+
+### Confirm key login works (before disabling passwords)
+
+Open a new terminal and connect:
+
+```bash
+ssh vybz@192.168.100.10
+```
+
+You should land in a shell **without a password prompt** (you may be asked for your key passphrase, that is the client decrypting the local private key, which is correct). If it still asks for the account password, stop and fix it now, because Phase B turns passwords off.
+
+A quick way to see why a key is or is not offered:
+
+```bash
+ssh -v vybz@192.168.100.10 2>&1 | grep -Ei "offering|accepted|authentications"
+```
+
+## Phase B: Harden sshd
+
+**Status:** Not started.
+
+Now lock the daemon down. You will do all of it in a drop-in file, never by editing the stock `sshd_config`.
+
+### Create a drop-in config
+
+Modern OpenSSH reads `/etc/ssh/sshd_config.d/*.conf` (the stock config ends with an `Include` line). Drop-ins survive package upgrades cleanly and keep your changes in one obvious place, so you are not diffing against a vendor file.
+
+```ini title="/etc/ssh/sshd_config.d/99-hardening.conf"
+# Authentication
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+
+# Who may connect
+AllowGroups sshusers
+MaxAuthTries 3
+LoginGraceTime 30
+
+# Idle session handling
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Reduce surface
+X11Forwarding no
+AllowTcpForwarding no
+
+# Modern crypto only (Mozilla "modern" OpenSSH guidance)
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+```
+
+What each directive does:
+
+- `PermitRootLogin no`: root can never log in over SSH. Admins log in as themselves, then `sudo`, which keeps an attributable audit trail.
+- `PasswordAuthentication no`: no passwords accepted, keys only. This is the single highest-value line in the file.
+- `PubkeyAuthentication yes`: keep key auth on (it is the default, stated explicitly for clarity).
+- `KbdInteractiveAuthentication no` and `ChallengeResponseAuthentication no`: shut the keyboard-interactive and challenge-response paths so password prompts cannot sneak back in through PAM.
+- `AllowGroups sshusers`: only members of the `sshusers` group may authenticate at all. An allowlist beats a denylist: a new service account cannot log in over SSH by accident.
+- `MaxAuthTries 3`: drop the connection after 3 failed attempts, slowing brute force.
+- `LoginGraceTime 30`: a client has 30 seconds to authenticate before the connection is closed, so half-open auth attempts cannot pile up.
+- `ClientAliveInterval 300` and `ClientAliveCountMax 2`: send a keepalive every 5 minutes, and after 2 unanswered ones (10 minutes) drop the session. This reaps dead sessions and idle shells.
+- `X11Forwarding no` and `AllowTcpForwarding no`: turn off forwarding you are not using. Leave `AllowTcpForwarding yes` only when a box is a deliberate jump host that must tunnel to others.
+
+Create the group and add your user before you reload, or the `AllowGroups` line will lock everyone out:
+
+```bash
+sudo groupadd -f sshusers
+sudo usermod -aG sshusers vybz
+```
+
+- `groupadd -f` creates `sshusers` (and is a no-op if it already exists).
+- `usermod -aG` **appends** the group (the `-a` is essential, without it you replace all of the user's groups).
+
+<Aside type="note" title="On non-standard ports">
+Moving SSH off port 22 (for example `Port 2222`) cuts opportunistic scan noise but is obscurity, not security: it stops nothing that actually targets you. If you do it, you also have to open the new port in the firewall and, on Rocky, tell SELinux about it (see the appendix). Decide whether the log-noise reduction is worth the extra moving parts.
+</Aside>
+
+### Test the config before applying it
+
+This is the step that saves you. Validate syntax without touching the running daemon:
+
+```bash
+sudo sshd -t
+```
+
+No output means the config is valid. Any output is an error with a file and line number, fix it before reloading. Never reload an untested `sshd` config on a remote box.
+
+### Reload and verify from a fresh session
+
+On Ubuntu the service is `ssh` (not `sshd`):
+
+```bash
+sudo systemctl reload ssh
+```
+
+<Aside type="danger" title="Do not close your session yet">
+With your **current** session still open, open a **brand-new** terminal and connect again:
+
+```bash
+ssh vybz@192.168.100.10
+```
+
+Only once that new session works do you close the original. If the new session fails, you still have the old one open to fix `99-hardening.conf`. This single habit is what stands between you and a console-recovery trip.
+</Aside>
+
+## Phase C: Firewall and fail2ban
+
+**Status:** Not started.
+
+Key auth stops password guessing from working. The firewall and fail2ban stop attackers from wasting your resources trying.
+
+### ufw: allow SSH, then enable
+
+Ubuntu ships `ufw` (Uncomplicated Firewall). **Allow SSH before you enable the firewall**, or you cut your own connection:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw enable
+sudo ufw status verbose
+```
+
+- `ufw allow OpenSSH` uses the named application profile (TCP/22). If you changed the port, use `sudo ufw allow 2222/tcp` instead.
+- `ufw enable` turns the firewall on and persists it across reboots. It warns that it may disrupt existing connections, answer `y` only after the allow rule is in place.
+
+```
+Status: active
+To                         Action      From
+--                         ------      ----
+OpenSSH                    ALLOW IN    Anywhere
+```
+
+### fail2ban: ban brute-force sources
+
+```bash
+sudo apt update
+sudo apt install -y fail2ban
+```
+
+Configure a jail in a `.local` file (never edit `jail.conf`, packages overwrite it):
+
+```ini title="/etc/fail2ban/jail.local"
+[DEFAULT]
+# Ignore your own management subnet so you cannot ban yourself
+ignoreip = 127.0.0.1/8 192.168.100.0/24
+bantime  = 1h
+findtime = 10m
+maxretry = 4
+
+[sshd]
+enabled = true
+port    = ssh
+# On a custom port: port = 2222
+backend = systemd
+```
+
+- `bantime = 1h`: how long an offending IP stays banned.
+- `findtime = 10m` with `maxretry = 4`: 4 failures inside 10 minutes triggers a ban.
+- `ignoreip`: never ban localhost or your management LAN, so a fat-fingered login does not lock you out.
+- `backend = systemd`: read failures from the journal, which is how modern Ubuntu logs sshd.
+
+Enable, start, and check it:
+
+```bash
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client status sshd
+```
+
+```
+Status for the jail: sshd
+|- Filter
+|  |- Currently failed: 0
+|  `- Total failed:     0
+`- Actions
+   |- Currently banned: 0
+   `- Total banned:     0
+```
+
+## Phase D: Validation
+
+**Status:** Not started.
+
+Prove every control actually holds. A hardening change you did not test is a guess.
+
+### Key login still succeeds
+
+```bash
+ssh vybz@192.168.100.10 "echo ok: $(hostname)"
+```
+
+Expected: `ok: ubuntu-base`, with no password prompt.
+
+### Password login is refused
+
+Force the client to try only a password and confirm the server rejects it:
+
+```bash
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no vybz@192.168.100.10
+```
+
+Expected: `Permission denied (publickey).` The server offers no password method at all.
+
+### Root login is refused
+
+```bash
+ssh root@192.168.100.10
+```
+
+Expected: `Permission denied (publickey).` even if you had root's key, `PermitRootLogin no` blocks it.
+
+### fail2ban bans after repeated failures
+
+From a host **outside** `ignoreip`, make several failed attempts, then check the jail and unban:
+
+```bash
+sudo fail2ban-client status sshd          # Currently banned: 1, with the IP listed
+sudo fail2ban-client set sshd unbanip 192.168.30.50
+```
+
+Expected: the offending IP appears under "Banned IP list", then clears after the unban.
+
+## Troubleshooting
+
+- **Locked out completely:** use the VM console (or revert the `pre-ssh-hardening` snapshot). At the console you can edit `/etc/ssh/sshd_config.d/99-hardening.conf`, run `sudo sshd -t`, and `sudo systemctl reload ssh`.
+- **Key works but still prompts for a password:** perms on `~/.ssh` (must be `700`) or `~/.ssh/authorized_keys` (must be `600`), or the directory is owned by the wrong user. Check with `ls -ld ~/.ssh` and `ssh -v` to see if the key is even offered.
+- **`sshd -t` reports a syntax error:** it gives the exact file and line. A common cause is a typo in a `KexAlgorithms`/`Ciphers` value or a stray space.
+- **`AllowGroups` locked everyone out:** you reloaded before adding your user to `sshusers`. Recover at the console, run the `usermod -aG sshusers` command, and reload.
+- **ufw cut your session:** you enabled ufw before allowing SSH. Recover at the console with `sudo ufw allow OpenSSH`, or `sudo ufw disable` to back out entirely.
+
+<Aside type="caution" title="Rollback">
+To undo this lab cleanly: `sudo rm /etc/ssh/sshd_config.d/99-hardening.conf && sudo sshd -t && sudo systemctl reload ssh` restores stock auth. `sudo ufw disable` drops the firewall. `sudo systemctl disable --now fail2ban` stops banning. Or simply revert the `pre-ssh-hardening` snapshot.
+</Aside>
+
+## Appendix: Rocky Linux differences
+
+Everything above applies to Rocky (RHEL-family) with a few changes:
+
+- **Service name is `sshd`, not `ssh`:** `sudo systemctl reload sshd`.
+- **Firewall is firewalld, not ufw:**
+
+  ```bash
+  sudo firewall-cmd --permanent --add-service=ssh
+  # or, for a custom port:
+  sudo firewall-cmd --permanent --add-port=2222/tcp
+  sudo firewall-cmd --reload
+  ```
+
+- **A non-standard port needs SELinux's blessing.** This is why "I changed the port and sshd will not start" is a RHEL-family rite of passage:
+
+  ```bash
+  sudo dnf install -y policycoreutils-python-utils
+  sudo semanage port -a -t ssh_port_t -p tcp 2222
+  ```
+
+  Without that, SELinux denies sshd the right to bind the new port. `semanage` lives in the `policycoreutils-python-utils` package, which is not installed by default.
+
+- **fail2ban** is in EPEL: `sudo dnf install -y epel-release && sudo dnf install -y fail2ban`. The jail config is identical.
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> a server you can reach securely from anywhere on the network, with passwords off, root off, brute force throttled, and a key pair ready to do unattended work. Lab 4 reuses exactly this key to run backups with no human at the keyboard.
+</div>

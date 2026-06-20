@@ -1,0 +1,205 @@
+---
+/**
+ * Live status board for the guide landing page. Reads public/lab-status.json,
+ * which scripts/gen_status.py regenerates from the `**Status:**` lines before
+ * every build, so this is always current as of the last deploy. Renders an
+ * overall bar and one card per lab. No client JS: the guide rebuilds whenever a
+ * status flips, which is exactly when this should change.
+ */
+import fs from 'node:fs';
+
+interface Lab {
+  id: string;
+  title: string;
+  path: string;
+  status: 'done' | 'next' | 'planned' | 'stretch';
+  pct: number;
+  phasesTotal: number;
+  phasesDone: number;
+}
+interface Status {
+  generatedAt: string;
+  guideBaseUrl: string;
+  summary: { overallPct: number; phasesDone: number; totalPhases: number; labsComplete: number; totalLabs: number };
+  labs: Lab[];
+}
+
+let status: Status | null = null;
+try {
+  const raw = fs.readFileSync(new URL('../../public/lab-status.json', import.meta.url), 'utf-8');
+  status = JSON.parse(raw) as Status;
+} catch {
+  status = null;
+}
+
+const base = import.meta.env.BASE_URL;
+const STATUS_LABEL: Record<string, string> = {
+  done: '✓ complete',
+  next: '● in progress',
+  planned: '○ not started',
+  stretch: 'stretch',
+};
+---
+
+{
+  status && (
+    <div class="board">
+      <div class="board-overall">
+        <div class="board-overall-head">
+          <span class="board-eyebrow">Overall build progress</span>
+          <span class="board-count">
+            <strong>{status.summary.phasesDone}</strong> / {status.summary.totalPhases} phases ·{' '}
+            {status.summary.labsComplete}/{status.summary.totalLabs} labs complete
+          </span>
+        </div>
+        <div class="board-bar">
+          <div class="board-bar-fill" style={`width:${status.summary.overallPct}%`} />
+        </div>
+      </div>
+
+      <div class="board-grid">
+        {status.labs.map((lab, i) => (
+          <a class="board-card" href={`${base}${lab.path}`} data-status={lab.status}>
+            <div class="board-card-top">
+              <span class="board-card-num">LAB {String(i + 1).padStart(2, '0')}</span>
+              <span class="board-pill" data-status={lab.status}>
+                {STATUS_LABEL[lab.status] ?? lab.status}
+              </span>
+            </div>
+            <div class="board-card-title">{lab.title}</div>
+            <div class="board-card-bar">
+              <div class="board-card-bar-fill" style={`width:${lab.pct}%`} />
+            </div>
+            <div class="board-card-meta">
+              {lab.phasesDone}/{lab.phasesTotal} phases
+            </div>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+<style>
+  .board {
+    margin: 1.5rem 0 2rem;
+  }
+  .board-overall {
+    border: 1px solid var(--llg-border, #1f2937);
+    background: rgba(20, 27, 36, 0.6);
+    border-radius: 0.75rem;
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 1rem;
+  }
+  .board-overall-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .board-eyebrow {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--llg-accent, #22d3ee);
+  }
+  .board-count {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.8rem;
+    color: var(--llg-ink-dim, #9ca3af);
+  }
+  .board-count strong {
+    color: var(--llg-accent, #22d3ee);
+  }
+  .board-bar,
+  .board-card-bar {
+    height: 8px;
+    border-radius: 999px;
+    background: #0f141b;
+    overflow: hidden;
+  }
+  .board-card-bar {
+    height: 5px;
+    margin: 0.6rem 0 0.4rem;
+  }
+  .board-bar-fill,
+  .board-card-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #0891b2, #22d3ee);
+    transition: width 0.6s ease;
+  }
+  .board-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+  }
+  .board-card {
+    display: block;
+    border: 1px solid var(--llg-border, #1f2937);
+    background: #141b24;
+    border-radius: 0.7rem;
+    padding: 0.9rem 1rem;
+    text-decoration: none !important;
+    color: inherit;
+    transition:
+      border-color 0.2s ease,
+      transform 0.2s ease;
+  }
+  .board-card:hover {
+    border-color: rgba(34, 211, 238, 0.5);
+    transform: translateY(-2px);
+  }
+  .board-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.45rem;
+  }
+  .board-card-num {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.66rem;
+    letter-spacing: 0.12em;
+    color: var(--llg-ink-faint, #6b7280);
+  }
+  .board-card-title {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--llg-ink, #e5e7eb);
+    line-height: 1.3;
+  }
+  .board-card-meta {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.7rem;
+    color: var(--llg-ink-faint, #6b7280);
+  }
+  .board-pill {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 0.12rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--llg-border, #1f2937);
+    color: var(--llg-ink-dim, #9ca3af);
+    white-space: nowrap;
+  }
+  .board-pill[data-status='done'] {
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+  }
+  .board-pill[data-status='next'] {
+    border-color: rgba(34, 211, 238, 0.35);
+    background: rgba(34, 211, 238, 0.1);
+    color: #22d3ee;
+  }
+  .board-pill[data-status='planned'] {
+    border-color: rgba(245, 158, 11, 0.35);
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+  }
+</style>

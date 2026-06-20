@@ -1,0 +1,268 @@
+---
+/**
+ * Bespoke, on-brand network topology (inline SVG, no graph library).
+ *
+ * Layout is computed here at build time from src/data/topology.ts. A small client
+ * script fetches lab-status.json (same origin, under BASE_URL) and lights up any
+ * node whose lab(s) are complete: an accent ring plus a check badge. This is the
+ * visual payoff of finishing a lab. The same model drives the portfolio's
+ * NetworkTopology, kept visually consistent across the two repos.
+ */
+import { subnets, nodes, edges, type TopoNode } from '../data/topology';
+
+const W = 940;
+const H = 580;
+const cx = W / 2;
+
+// Top chain: internet -> home router -> VMnet8 (NAT) -> pfSense.
+const chain = {
+  internet: { y: 34 },
+  router: { y: 78, w: 130, h: 34 },
+  nat: { y: 124, w: 150, h: 34 },
+  pfsense: { y: 176, w: 230, h: 70 },
+};
+const pfBottom = chain.pfsense.y + chain.pfsense.h;
+
+// Subnet group boxes across the bottom.
+const boxTop = 312;
+const boxH = 240;
+const boxes: Record<string, { x: number; w: number }> = {
+  lan: { x: 24, w: 470 },
+  lab200: { x: 514, w: 196 },
+  iot: { x: 730, w: 186 },
+};
+
+const CARD_W = 138;
+const CARD_H = 84;
+const GAP = 14;
+
+type Placed = TopoNode & { x: number; y: number; color: string };
+const placed: Placed[] = [];
+for (const sn of subnets) {
+  const box = boxes[sn.id];
+  // pfSense is drawn once as the central router box, so skip it as a subnet card.
+  const members = nodes.filter((n) => n.subnet === sn.id && n.type !== 'firewall');
+  // Stack into rows of as many cards as the box width allows (defensive: today
+  // every subnet's members fit on one row).
+  const perRow = Math.max(1, Math.floor((box.w + GAP) / (CARD_W + GAP)));
+  members.forEach((n, i) => {
+    const rowCount = Math.min(perRow, members.length);
+    const rowTotal = rowCount * CARD_W + (rowCount - 1) * GAP;
+    const rowStart = box.x + (box.w - rowTotal) / 2;
+    placed.push({
+      ...n,
+      color: sn.color,
+      x: rowStart + (i % perRow) * (CARD_W + GAP),
+      y: boxTop + 50 + Math.floor(i / perRow) * (CARD_H + GAP),
+    });
+  });
+}
+
+function boxCenter(id: string) {
+  const b = boxes[id];
+  return b.x + b.w / 2;
+}
+
+// Icon glyphs per node type, drawn small in the card's top-left.
+function icon(type: TopoNode['type']): string {
+  switch (type) {
+    case 'firewall':
+      return `<path d="M0 1h14v3H0z M0 5h6v3H0z M8 5h6v3H8z M0 9h14v3H0z" fill="currentColor" opacity="0.9"/>`;
+    case 'server':
+      return `<rect x="0" y="0" width="14" height="5" rx="1" fill="currentColor" opacity="0.9"/><rect x="0" y="7" width="14" height="5" rx="1" fill="currentColor" opacity="0.55"/><circle cx="3" cy="2.5" r="1" fill="#0a0e14"/><circle cx="3" cy="9.5" r="1" fill="#0a0e14"/>`;
+    case 'workstation':
+      return `<rect x="0" y="0" width="14" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 11h4M7 9v2" stroke="currentColor" stroke-width="1.4"/>`;
+    case 'iot':
+      return `<circle cx="7" cy="9" r="2" fill="currentColor"/><path d="M3 6a6 6 0 0 1 8 0 M5 8a3 3 0 0 1 4 0" fill="none" stroke="currentColor" stroke-width="1.3"/>`;
+  }
+}
+---
+
+<figure class="topo">
+  <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Homelab network topology, internet through pfSense to the LAN, LAB200, and IoT subnets" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 -5 10 10" refX="8" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,-5L10,0L0,5" fill="#475569"></path>
+      </marker>
+    </defs>
+
+    {/* Subnet group boxes + labels */}
+    {subnets.map((sn) => {
+      const b = boxes[sn.id];
+      return (
+        <g>
+          <rect x={b.x} y={boxTop} width={b.w} height={boxH} rx="14" fill={`${sn.color}0d`} stroke={sn.color} stroke-opacity="0.3"></rect>
+          <text x={b.x + 16} y={boxTop + 26} fill={sn.color} font-size="11" font-family="var(--sl-font-mono)" letter-spacing="0.5">{sn.label}</text>
+        </g>
+      );
+    })}
+
+    {/* pfSense -> subnet connectors with animated flow */}
+    {subnets.map((sn) => (
+      <line class="flow" x1={cx} y1={pfBottom} x2={boxCenter(sn.id)} y2={boxTop} stroke={sn.color} stroke-opacity="0.5" stroke-width="1.5"></line>
+    ))}
+
+    {/* Top chain */}
+    <circle cx={cx} cy={chain.internet.y} r="20" fill="#0f141b" stroke="#1f2937"></circle>
+    <text x={cx} y={chain.internet.y + 4} text-anchor="middle" fill="#9ca3af" font-size="10" font-family="var(--sl-font-mono)">internet</text>
+
+    <rect x={cx - chain.router.w / 2} y={chain.router.y} width={chain.router.w} height={chain.router.h} rx="6" fill="#0f141b" stroke="#1f2937"></rect>
+    <text x={cx} y={chain.router.y + 22} text-anchor="middle" fill="#9ca3af" font-size="10.5" font-family="var(--sl-font-mono)">home router</text>
+
+    <rect x={cx - chain.nat.w / 2} y={chain.nat.y} width={chain.nat.w} height={chain.nat.h} rx="6" fill="#0f141b" stroke="#1f2937"></rect>
+    <text x={cx} y={chain.nat.y + 22} text-anchor="middle" fill="#9ca3af" font-size="10.5" font-family="var(--sl-font-mono)">VMnet8 (NAT)</text>
+
+    <rect x={cx - chain.pfsense.w / 2} y={chain.pfsense.y} width={chain.pfsense.w} height={chain.pfsense.h} rx="8" fill="#0f141b" stroke="#22d3ee" stroke-width="1.5"></rect>
+    <text x={cx} y={chain.pfsense.y + 26} text-anchor="middle" fill="#22d3ee" font-size="12.5" font-family="var(--sl-font-mono)" font-weight="600">pfSense CE 2.7.x</text>
+    <text x={cx} y={chain.pfsense.y + 44} text-anchor="middle" fill="#9ca3af" font-size="10" font-family="var(--sl-font-mono)">LAN .100.1 · LAB200 .200.1</text>
+
+    <line x1={cx} y1={chain.internet.y + 20} x2={cx} y2={chain.router.y} stroke="#475569" marker-end="url(#arrow)"></line>
+    <line x1={cx} y1={chain.router.y + chain.router.h} x2={cx} y2={chain.nat.y} stroke="#475569" marker-end="url(#arrow)"></line>
+    <line x1={cx} y1={chain.nat.y + chain.nat.h} x2={cx} y2={chain.pfsense.y} stroke="#475569" marker-end="url(#arrow)"></line>
+
+    {/* Node cards */}
+    {placed.map((n) => (
+      <g
+        class={`node node-${n.type}${n.established ? ' is-established' : ''}`}
+        data-node={n.id}
+        data-labs={(n.labs ?? []).join(',')}
+        transform={`translate(${n.x}, ${n.y})`}
+      >
+        <rect class="node-rect" width={CARD_W} height={CARD_H} rx="7" fill="#141b24" stroke={n.color} stroke-opacity="0.4"></rect>
+        <g class="node-icon" transform="translate(12, 13)" style={`color:${n.color}`} set:html={icon(n.type)}></g>
+        <text x={CARD_W - 12} y="22" text-anchor="end" fill="#e5e7eb" font-size="11.5" font-family="var(--sl-font-mono)">{n.label}</text>
+        <text x={CARD_W - 12} y="40" text-anchor="end" fill={n.color} font-size="11" font-family="var(--sl-font-mono)">{n.ip}</text>
+        {n.role && (
+          <text x={CARD_W - 12} y="58" text-anchor="end" fill="#6b7280" font-size="9.5" font-family="var(--sl-font-mono)">{n.role}</text>
+        )}
+        {(n.labs?.length ?? 0) > 0 && (
+          <text class="node-state" x="12" y={CARD_H - 10} fill="#6b7280" font-size="9" font-family="var(--sl-font-mono)">pending</text>
+        )}
+        {n.established && (
+          <text x={CARD_W - 12} y={CARD_H - 10} text-anchor="end" fill="#6b7280" font-size="8.5" font-family="var(--sl-font-mono)">established</text>
+        )}
+        <g class="done-badge" transform={`translate(${CARD_W - 16}, ${CARD_H - 16})`}>
+          <circle r="9" fill="#10b981"></circle>
+          <path d="M-4 0l3 3l5 -6" fill="none" stroke="#0a0e14" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </g>
+      </g>
+    ))}
+  </svg>
+
+  <figcaption class="topo-legend">
+    {subnets.map((sn) => (
+      <span class="topo-legend-item"><span class="dot" style={`background:${sn.color}`}></span>{sn.label}</span>
+    ))}
+    <span class="topo-legend-item topo-legend-live"><span class="dot" style="background:#10b981"></span>green check = lab complete (live)</span>
+  </figcaption>
+</figure>
+
+<style>
+  .topo {
+    margin: 1.5rem 0;
+    padding: 1rem;
+    border: 1px solid var(--llg-border, #1f2937);
+    border-radius: 0.85rem;
+    background: rgba(20, 27, 36, 0.5);
+    overflow: hidden;
+  }
+  .topo svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .node-rect {
+    transition:
+      stroke 0.3s ease,
+      stroke-opacity 0.3s ease,
+      filter 0.3s ease;
+  }
+  .done-badge {
+    opacity: 0;
+    transform-box: fill-box;
+    transition: opacity 0.35s ease;
+  }
+  .node.is-done .node-rect {
+    stroke: #10b981;
+    stroke-opacity: 1;
+    stroke-width: 2;
+    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.45));
+  }
+  .node.is-done .done-badge {
+    opacity: 1;
+  }
+  .node.is-done .node-state {
+    fill: #10b981;
+  }
+  .node.is-progress .node-rect {
+    stroke: #22d3ee;
+    stroke-opacity: 0.9;
+    stroke-dasharray: 4 3;
+  }
+  .node.is-progress .node-state {
+    fill: #22d3ee;
+  }
+  .topo-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    margin-top: 0.75rem;
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.72rem;
+    color: var(--llg-ink-dim, #9ca3af);
+  }
+  .topo-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .topo-legend .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .flow {
+    stroke-dasharray: 5 6;
+    animation: topo-flow 1.4s linear infinite;
+  }
+  @keyframes topo-flow {
+    to {
+      stroke-dashoffset: -22;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flow {
+      animation: none;
+    }
+  }
+</style>
+
+<script>
+  // Make the topology progress-aware. lab-status.json is served at BASE_URL
+  // (same origin as this page), so no CORS, no token, no backend. A node with
+  // data-labs lights up when every one of its labs is "done"; if some are done
+  // or in progress it gets the dashed "in progress" ring.
+  const base = import.meta.env.BASE_URL;
+  fetch(`${base}lab-status.json`)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no status'))))
+    .then((data: { labs: { id: string; status: string }[] }) => {
+      const done = new Set(data.labs.filter((l) => l.status === 'done').map((l) => l.id));
+      const live = new Set(data.labs.filter((l) => l.status === 'next').map((l) => l.id));
+      document.querySelectorAll<SVGGElement>('[data-labs]').forEach((el) => {
+        const labs = (el.getAttribute('data-labs') || '').split(',').filter(Boolean);
+        if (!labs.length) return;
+        const state = el.querySelector('.node-state');
+        if (labs.every((l) => done.has(l))) {
+          el.classList.add('is-done');
+          if (state) state.textContent = 'complete';
+        } else if (labs.some((l) => done.has(l) || live.has(l))) {
+          el.classList.add('is-progress');
+          if (state) state.textContent = 'in progress';
+        }
+      });
+    })
+    .catch(() => {
+      /* status not published yet: nodes stay in their pending state */
+    });
+</script>

@@ -1,0 +1,309 @@
+---
+title: Backup Automation with rsync + cron
+description: Build incremental, space-efficient, logged, scheduled backups that pull over the hardened SSH from Lab 1, lock the backup key to a read-only rrsync command, prove a restore, and schedule it with both cron and a systemd timer.
+labId: rsync
+labOrder: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `rocky-base` (Rocky Linux 10, `192.168.200.12`, LAB200) as the **backup server**, pulling from `ubuntu-base` (`192.168.100.10`).
+
+## Objective
+
+Build a real backup system: nightly, incremental, space-efficient snapshots pulled over SSH, logged, rotated, alerted on failure, and proven by an actual restore. You will lock the backup key down so a stolen copy can do nothing but pull one read-only path, and you will schedule the job two ways (cron and a systemd timer) so you understand both.
+
+**Why it matters for an MSP:** managed backup is bread-and-butter recurring revenue, and "we had backups but could not restore" is how shops die. This lab applies the **3-2-1 rule** (at least 3 copies, on 2 different media, with 1 off-site) and, more importantly, ends by restoring a file and verifying it byte-for-byte. A backup you have not restored is a hope, not a backup.
+
+**Prerequisites:**
+
+- [Lab 1](/linux-lab-guide/labs/01-ssh-hardening/) done. This lab reuses that hardened SSH and the same key discipline.
+- `rocky-base` can reach `ubuntu-base` on `22/tcp` (the existing pfSense LAB200-to-LAN SSH permit).
+- Some real data on the source to back up (the Samba share from [Lab 2](/linux-lab-guide/labs/02-samba-domain/) is a good target).
+- A snapshot named `pre-backup`.
+
+## Phase A: Backup user and a locked-down key
+
+**Status:** Not started.
+
+The backup runs unattended, so its key cannot have a passphrase. You contain that risk by making the key able to do exactly one thing.
+
+### Create a dedicated backup user
+
+On both the source (`ubuntu-base`) and the backup server (`rocky-base`):
+
+```bash
+sudo useradd -m -s /bin/bash backup-svc
+```
+
+A dedicated service account keeps backups out of your personal account and makes the forced-command restriction below clean.
+
+### Generate a separate, passphrase-less key (on rocky-base)
+
+```bash
+sudo -u backup-svc ssh-keygen -t ed25519 -N "" -f /home/backup-svc/.ssh/id_backup -C "backup@rocky"
+```
+
+- `-N ""` sets an empty passphrase so cron can use the key with no prompt.
+- `-f .../id_backup` keeps it separate from any interactive key. This key exists only for backups.
+
+<Aside type="tip" title="A backup key is not a root key">
+A passphrase-less key feels dangerous, and a bare one would be. The next step is what makes it safe: on the source, the key is restricted to a single read-only `rrsync` command. Even if someone steals `id_backup`, all they can do is pull a copy of one directory. That is the difference between a backup key and a master key.
+</Aside>
+
+### Restrict the key on the source with rrsync
+
+`rrsync` is a wrapper (shipped with rsync) that confines an SSH key to rsync, in one directory, read-only. On `ubuntu-base`, add the backup key to `backup-svc`'s `authorized_keys` with a forced command:
+
+```text title="/home/backup-svc/.ssh/authorized_keys (on ubuntu-base)"
+command="rrsync -ro /srv/samba/share",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA...backup@rocky
+```
+
+- `command="rrsync -ro /srv/samba/share"`: any session with this key can only run rsync, read-only (`-ro`), rooted at `/srv/samba/share`. No shell, no other path.
+- `no-pty` and the `no-*-forwarding` options strip away interactive and tunneling capabilities.
+
+Find `rrsync` if it is not on `PATH` (`/usr/bin/rrsync`, or `/usr/share/doc/rsync/scripts/rrsync` on some distros; `sudo cp` it into `/usr/local/bin` and `chmod +x`).
+
+## Phase B: The backup script
+
+**Status:** Not started.
+
+Create `/usr/local/bin/backup.sh` on `rocky-base`. It pulls from the source into a timestamped snapshot, hardlinking unchanged files against the previous snapshot so each night looks complete but only costs the delta.
+
+```bash title="/usr/local/bin/backup.sh"
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Config ---------------------------------------------------------------
+SRC="backup-svc@192.168.100.10:/"     # rrsync roots this at /srv/samba/share
+DEST_ROOT="/backups/ubuntu-share"
+KEY="/home/backup-svc/.ssh/id_backup"
+LOG_DIR="/var/log/backups"
+RETENTION_DAYS=14
+
+STAMP="$(date +%F_%H%M)"
+DEST="$DEST_ROOT/$STAMP"
+LATEST="$DEST_ROOT/latest"
+LOG="$LOG_DIR/backup-$STAMP.log"
+
+mkdir -p "$DEST_ROOT" "$LOG_DIR"
+
+# --- Run ------------------------------------------------------------------
+echo "[$(date)] starting backup -> $DEST" >>"$LOG"
+
+rsync -aH --stats -z --partial --delete \
+  --exclude='*.tmp' --exclude='.cache/' \
+  --link-dest="$LATEST" \
+  -e "ssh -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
+  "$SRC" "$DEST" >>"$LOG" 2>&1
+
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "[$(date)] FAILED rc=$rc" >>"$LOG"
+  # Optional alert hook (uncomment and set your webhook):
+  # curl -fsS -X POST -d "backup FAILED rc=$rc on $(hostname)" "$WEBHOOK_URL" || true
+  exit "$rc"
+fi
+
+ln -sfn "$DEST" "$LATEST"
+echo "[$(date)] OK -> $DEST" >>"$LOG"
+
+# --- Retention (guarded so it can never target /) -------------------------
+if [ -n "$DEST_ROOT" ] && [ "$DEST_ROOT" != "/" ]; then
+  find "$DEST_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$RETENTION_DAYS" \
+    -exec rm -rf {} \;
+fi
+```
+
+The rsync flags, each one earning its place:
+
+- `-a` (archive): preserve permissions, timestamps, symlinks, owner, and group. The everyday default for backups.
+- `-H`: preserve hardlinks within the data set.
+- `--stats`: print a transfer summary (files, bytes, speedup) into the log.
+- `-z`: compress over the wire, helpful across the LAB200-to-LAN hop.
+- `--partial`: keep partially transferred files so an interrupted run can resume instead of restarting.
+- `--delete`: mirror, so files removed on the source are removed from this snapshot. Powerful and dangerous: a mistake on the source propagates. The `--link-dest` snapshots below are your safety net, since older snapshots still hold the file.
+- `--exclude`: skip junk (`*.tmp`, caches) you never need to restore.
+- `--link-dest="$LATEST"`: the impressive part. Any file identical to the one in the previous snapshot is stored as a **hardlink**, not a copy. Each nightly snapshot looks like a full, complete tree, but unchanged files cost zero extra disk. You get the simplicity of full backups at the storage cost of incrementals.
+- `-e "ssh -i $KEY -o BatchMode=yes"`: use the backup key, and `BatchMode=yes` makes ssh fail immediately rather than ever prompting (essential under cron).
+
+Set `bash`'s safety flags and make it executable:
+
+- `set -euo pipefail` (top of the script): exit on any error, on undefined variables, and on a failure anywhere in a pipeline. A backup script that plows on after an error is worse than none.
+
+```bash
+sudo chmod +x /usr/local/bin/backup.sh
+```
+
+Add logrotate so logs do not grow forever:
+
+```text title="/etc/logrotate.d/backups"
+/var/log/backups/*.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+}
+```
+
+## Phase C: Run it safely
+
+**Status:** Not started.
+
+### Dry run first
+
+`-n` (dry run) shows what would change without copying a byte. Always do this on a new job:
+
+```bash
+sudo -u backup-svc rsync -aHn --delete \
+  -e "ssh -i /home/backup-svc/.ssh/id_backup -o BatchMode=yes" \
+  backup-svc@192.168.100.10:/ /backups/ubuntu-share/dryrun
+```
+
+Read the output: lines are files that would transfer; `deleting ...` lines are files that would be removed by `--delete`. If the delete list surprises you, stop and check the source before running for real.
+
+### Real run, then inspect
+
+```bash
+sudo /usr/local/bin/backup.sh
+ls -l /backups/ubuntu-share/        # a timestamped dir + a 'latest' symlink
+```
+
+### Prove the hardlink savings
+
+Run the script a second time, then compare:
+
+```bash
+du -sh /backups/ubuntu-share/*/      # each snapshot reports its apparent size
+du -sh --max-depth=1 /backups/ubuntu-share/   # total disk actually used
+```
+
+Expected: the second snapshot's directory looks the same size as the first, but the total disk used barely grows, because unchanged files are hardlinks, not copies. That is `--link-dest` doing its job.
+
+## Phase D: Schedule it
+
+**Status:** Not started.
+
+### The cron way
+
+Use a file in `/etc/cron.d` (more visible and reviewable than a personal crontab):
+
+```text title="/etc/cron.d/lab-backups"
+# m h dom mon dow user command
+0 2 * * * root /usr/local/bin/backup.sh
+```
+
+- The five time fields are minute, hour, day-of-month, month, day-of-week. `0 2 * * *` means 02:00 every day.
+- The `user` field (here `root`) is specific to `/etc/cron.d` and user-crontab-less files.
+
+<Aside type="caution" title="The cron environment gotcha">
+Cron runs with a minimal environment and a bare `PATH` (often just `/usr/bin:/bin`). Commands that work in your shell can fail under cron because a binary is not found. Use absolute paths in the script (which we do), or set `PATH=` explicitly at the top of the cron file.
+</Aside>
+
+### The modern way: a systemd timer
+
+A service unit that runs the script:
+
+```ini title="/etc/systemd/system/backup.service"
+[Unit]
+Description=Nightly rsync backup of the Samba share
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup.sh
+```
+
+And a timer that fires it:
+
+```ini title="/etc/systemd/system/backup.timer"
+[Unit]
+Description=Run backup.service nightly at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now backup.timer
+systemctl list-timers backup.timer --no-pager
+```
+
+- `OnCalendar=*-*-* 02:00:00`: every day at 02:00.
+- `Persistent=true`: if the machine was off at 02:00, run the job at next boot, so a powered-down night does not silently skip a backup.
+
+<Aside type="tip" title="Why timers beat cron">
+Output goes to the journal (`journalctl -u backup.service`), so you get logging for free. `Persistent=true` catches up missed runs, which cron cannot do. And timers can declare ordering and dependencies (`After=network-online.target`), so the job will not fire before the network is up. Use cron when you need portability or simplicity, timers when you want observability.
+</Aside>
+
+## Phase E: Validation (the part that actually matters)
+
+**Status:** Not started.
+
+### A scheduled run fires
+
+```bash
+journalctl -u backup.service --no-pager | tail
+# or, for cron:
+tail /var/log/backups/backup-*.log
+```
+
+Expected: an `OK -> ...` line at the scheduled time.
+
+### A failure is logged and exits non-zero
+
+Simulate an unreachable source and confirm the job fails loudly rather than reporting a phantom success:
+
+```bash
+sudo SRC="backup-svc@192.168.100.99:/" /usr/local/bin/backup.sh ; echo "exit=$?"
+```
+
+Expected: a `FAILED rc=...` line in the log and a non-zero `exit=`. (The alert hook would fire here if you wired one.)
+
+### Restore test (do this, every time)
+
+Delete a file on the source, restore it from the latest snapshot, and verify it is identical:
+
+```bash
+# On ubuntu-base: note a file's checksum, then delete it
+sha256sum /srv/samba/share/report.txt
+sudo rm /srv/samba/share/report.txt
+
+# On rocky-base: copy it back from the latest snapshot to the source
+rsync -a -e "ssh -i /home/backup-svc/.ssh/id_backup" \
+  /backups/ubuntu-share/latest/report.txt \
+  vybz@192.168.100.10:/tmp/report.txt
+
+# On ubuntu-base: confirm the checksum matches the original
+sha256sum /tmp/report.txt
+```
+
+Expected: the two `sha256sum` values match exactly. That match, not the existence of a snapshot, is what proves the backup works.
+
+<Aside type="caution" title="A note on 3-2-1">
+This lab gives you copy 1 (the live data) and copy 2 (the snapshots on Rocky). For real 3-2-1 you still need copy 3 off-site and on different media: a second `rsync` target at another location, an external disk rotated off-site, or object storage. Name the gap honestly rather than calling a single local replica a backup strategy.
+</Aside>
+
+## Troubleshooting
+
+- **Key prompts for a passphrase under cron:** the key must be passphrase-less and the ssh command must include `-o BatchMode=yes`, so it fails instead of hanging on a prompt.
+- **`rrsync` path mismatch / "access denied":** the client path must sit under the `rrsync` root. With `rrsync -ro /srv/samba/share`, the source is `backup-svc@host:/` (rrsync prepends the root), not the full absolute path.
+- **`--delete` removed more than intended:** restore from an older snapshot (this is exactly why you keep more than one), then fix the source before the next run.
+- **Cron job does nothing:** `PATH` or an absolute-path issue, or the `/etc/cron.d` file lacks the user field. Check `journalctl -u crond` and the script's own log.
+- **rsync blocked across subnets:** pfSense must permit `rocky-base` to reach `ubuntu-base` on `22/tcp`. Confirm with `ssh -i ... backup-svc@192.168.100.10` (it should run the forced command and exit).
+- **Restore permissions wrong:** restoring as the wrong user can change ownership. Restore to a staging path and move into place with correct ownership, or run the restore as a user that can set the target perms.
+
+<Aside type="caution" title="Rollback">
+Stop scheduling with `sudo systemctl disable --now backup.timer` and remove `/etc/cron.d/lab-backups`. Delete `/usr/local/bin/backup.sh`, the `backup.service`/`backup.timer` units (then `daemon-reload`), and the `backup-svc` key line from the source's `authorized_keys`. Snapshots under `/backups` can stay or be removed. Or revert the `pre-backup` snapshot.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> automated, incremental, restore-tested backups running unattended over the same hardened SSH you built in Lab 1, with a key that can do nothing but pull one folder. That is the full chain: harden access, join the domain, own DNS, and protect the data, the four moves that turn a pile of VMs into a network a business could actually run.
+</div>

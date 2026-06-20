@@ -1,0 +1,233 @@
+---
+title: Local DNS with BIND9
+description: Stand up a caching, forwarding BIND9 resolver on Rocky Linux that conditionally forwards corp.lab to the AD DNS and serves its own authoritative zone, with forward and reverse records and full validation.
+labId: bind9
+labOrder: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `rocky-base` (Rocky Linux 10, `192.168.200.12`, LAB200).
+
+## Objective
+
+Build a Linux DNS resolver that does three jobs: caches and forwards internet lookups to public DNS, conditionally forwards `corp.lab` to the Active Directory DNS so Linux hosts can resolve domain names, and serves its own authoritative zone for the lab's Linux hosts (forward and reverse). When you are done, `rocky-base` is a resolver other boxes can point at for everything.
+
+**Why it matters for an MSP:** DNS is the backbone of every network and the number-one thing that breaks Active Directory. "It is always DNS" is a cliche because it is true. Building a resolver that integrates a Linux view of the world with the AD zone, and reading its logs when it misbehaves, is core troubleshooting muscle you will use on day one.
+
+**Prerequisites:**
+
+- [Lab 1](/linux-lab-guide/labs/01-ssh-hardening/) done (you manage `rocky-base` over hardened SSH).
+- `DC01` (`192.168.100.5`) reachable and authoritative for `corp.lab`.
+- pfSense permitting the DNS path: `rocky-base` must reach `DC01:53` and the internet forwarders. (The existing LAB200 default-permit rule covers outbound; the LAB200-to-LAN SSH rule shows the pattern for a targeted permit.)
+- A snapshot named `pre-bind9`.
+
+## Phase A: Install and base options
+
+**Status:** Not started.
+
+```bash
+sudo dnf install -y bind bind-utils
+```
+
+`bind` is the server (`named`), `bind-utils` gives you `dig`, `host`, and `named-checkconf`/`named-checkzone`.
+
+Configure the global options. The `acl` block names your trusted networks once and reuses the name:
+
+```text title="/etc/named.conf" {1-4,8,11,14,16}
+acl "trusted" {
+    127.0.0.1;
+    192.168.100.0/24;
+    192.168.200.0/24;
+};
+
+options {
+    listen-on port 53 { 127.0.0.1; 192.168.200.12; };
+    directory       "/var/named";
+
+    allow-query     { trusted; };
+    recursion       yes;
+
+    forwarders      { 1.1.1.1; 9.9.9.9; };
+    forward only;
+
+    dnssec-validation auto;
+};
+```
+
+- `listen-on`: serve DNS on loopback and the LAB200 address. Bind to specific addresses, not all interfaces.
+- `allow-query { trusted; }`: only your lab subnets may query, so this is not an open resolver the internet can abuse.
+- `recursion yes`: this server will resolve on a client's behalf (a resolver, not just an authoritative server).
+- `forwarders { 1.1.1.1; 9.9.9.9; }` with `forward only`: send recursive queries to Cloudflare and Quad9 instead of walking the root servers yourself. Forwarding is faster and friendlier through a home connection; full recursion is the alternative if you want no upstream dependency.
+- `dnssec-validation auto`: validate DNSSEC signatures for the public internet. (You will turn this off for the AD forward zone next, because internal AD zones are not signed.)
+
+Validate the syntax before starting anything:
+
+```bash
+sudo named-checkconf
+```
+
+No output means valid.
+
+## Phase B: Conditional forward for the AD domain
+
+**Status:** Not started.
+
+This is the integration point with Active Directory. You do **not** make Rocky authoritative for `corp.lab`, AD owns that zone and updates it dynamically. Instead you forward only `corp.lab` queries to the DC:
+
+```text title="/etc/named.conf"
+zone "corp.lab" IN {
+    type forward;
+    forward only;
+    forwarders { 192.168.100.5; };   # DC01
+};
+```
+
+- `type forward`: for this zone, hand every query straight to the listed forwarder.
+- `forwarders { 192.168.100.5; }`: the DC, which is authoritative for `corp.lab`.
+
+<Aside type="tip" title="Why forward, not host">
+If you made Rocky authoritative for `corp.lab`, you would have a second, stale copy of a zone that AD changes constantly (machine records, SRV records, dynamic updates). Forwarding keeps a single source of truth (the DC) and lets Linux clients resolve domain names through Rocky.
+</Aside>
+
+<Aside type="caution" title="DNSSEC and the AD forward">
+Internal AD zones are not DNSSEC-signed. With global `dnssec-validation auto`, the unsigned `corp.lab` answers are simply treated as insecure, which is fine. If you ever see `SERVFAIL` on `corp.lab` lookups tied to validation, set `dnssec-validation no;` (lab-wide) or isolate the behavior, but try not to weaken validation for the public internet.
+</Aside>
+
+## Phase C: Authoritative zone for the Linux subdomain
+
+**Status:** Not started.
+
+Serve your own forward zone for the Linux hosts, plus the matching reverse zone so IP-to-name lookups work.
+
+Declare both zones in `/etc/named.conf`:
+
+```text title="/etc/named.conf"
+zone "lab.local" IN {
+    type master;
+    file "lab.local.zone";
+    allow-update { none; };
+};
+
+zone "200.168.192.in-addr.arpa" IN {
+    type master;
+    file "200.168.192.rev";
+    allow-update { none; };
+};
+```
+
+The forward zone file (serial format is the date plus a daily counter):
+
+```text title="/var/named/lab.local.zone" {2,9-11}
+$TTL 1h
+@   IN  SOA ns1.lab.local. admin.lab.local. (
+        2026062001  ; serial (bump on every edit)
+        1h          ; refresh
+        15m         ; retry
+        1w          ; expire
+        1h )        ; minimum / negative cache TTL
+    IN  NS  ns1.lab.local.
+ns1     IN  A   192.168.200.12
+rocky   IN  A   192.168.200.12
+ubuntu  IN  A   192.168.100.10
+```
+
+The reverse zone, mapping addresses back to names with `PTR` records:
+
+```text title="/var/named/200.168.192.rev"
+$TTL 1h
+@   IN  SOA ns1.lab.local. admin.lab.local. (
+        2026062001 1h 15m 1w 1h )
+    IN  NS  ns1.lab.local.
+12  IN  PTR rocky.lab.local.
+```
+
+- **SOA fields:** `serial` is the version number a secondary uses to detect changes (bump it on every edit, or your changes will not propagate). `refresh`/`retry`/`expire` govern secondary polling; `minimum` is how long negative answers are cached.
+- **NS** names the authoritative server for the zone; **A** maps a name to an address; **PTR** maps an address back to a name.
+
+<Aside type="tip" title="Why reverse DNS matters">
+Plenty of systems do a reverse lookup and judge you by the answer: mail servers, SSH logging, and some authentication flows. Missing or wrong PTR records cause slow logins and "from UNKNOWN" log lines. Serving the reverse zone keeps your own hosts clean.
+</Aside>
+
+Validate each zone file before loading:
+
+```bash
+sudo named-checkzone lab.local /var/named/lab.local.zone
+sudo named-checkzone 200.168.192.in-addr.arpa /var/named/200.168.192.rev
+```
+
+Expected: `OK` and the loaded serial for each.
+
+## Phase D: Firewall, SELinux, and start
+
+**Status:** Not started.
+
+Open DNS in firewalld:
+
+```bash
+sudo firewall-cmd --permanent --add-service=dns
+sudo firewall-cmd --reload
+```
+
+SELinux is enforcing on Rocky. The default `/var/named` path is already labeled correctly (`named_zone_t`), so zones placed there need nothing extra. If you ever store zone files elsewhere, you must relabel them, which is a classic "named will not load my zone" trap:
+
+```bash
+# Only needed for zone files outside /var/named:
+sudo restorecon -Rv /var/named
+# or set the type explicitly on a custom path:
+# sudo semanage fcontext -a -t named_zone_t "/custom/path(/.*)?" && sudo restorecon -Rv /custom/path
+```
+
+Enable and start the resolver:
+
+```bash
+sudo systemctl enable --now named
+sudo systemctl status named --no-pager
+```
+
+## Phase E: Validation
+
+**Status:** Not started.
+
+Run each query against the new resolver and confirm the answer comes from the right place.
+
+```bash
+# Recursion/forwarding works (public internet):
+dig @localhost google.com +short
+
+# AD bridge works (conditional forward to DC01):
+dig @localhost dc01.corp.lab +short
+
+# Your authoritative zone answers:
+dig @localhost rocky.lab.local +short
+
+# Reverse lookup works:
+dig @localhost -x 192.168.200.12 +short
+```
+
+Expected, in order: a public A record for `google.com`; `192.168.100.5` for `dc01.corp.lab` (proving the AD forward); `192.168.200.12` for `rocky.lab.local`; and `rocky.lab.local.` for the reverse query.
+
+Finally, point a client at Rocky and confirm it resolves both worlds. On `ubuntu-base`, temporarily set the nameserver to `192.168.200.12` and run:
+
+```bash
+dig dc01.corp.lab +short      # resolves via Rocky's conditional forward
+dig github.com +short          # resolves via Rocky's internet forwarders
+```
+
+If both answer, `rocky-base` is a complete resolver for the lab.
+
+## Troubleshooting
+
+- **`named` will not start:** run `sudo named-checkconf` first, then `sudo journalctl -u named -e`. Most failures are a typo in `named.conf` or a zone file, called out by line.
+- **Zone will not load / SELinux denial:** check `sudo journalctl -u named | grep -i denied`. A custom zone path needs `restorecon` or the `named_zone_t` label.
+- **Forwarders unreachable:** `dig @1.1.1.1 google.com` from Rocky. If that fails, pfSense is blocking LAB200 outbound DNS, add a permit rule.
+- **`corp.lab` returns SERVFAIL:** usually DNSSEC validation on the unsigned AD zone, or `DC01:53` is unreachable. Test `dig @192.168.100.5 dc01.corp.lab` directly.
+- **Edits do not take effect:** you did not bump the SOA serial, or you forgot `sudo rndc reload`. Bump the serial and reload.
+
+<Aside type="caution" title="Rollback">
+Stop and disable the resolver with `sudo systemctl disable --now named`, then point clients back at `DC01` (`192.168.100.5`) for DNS. Remove the zone stanzas from `/etc/named.conf` if you want a clean slate, or revert the `pre-bind9` snapshot. Nothing here changes the AD zone itself, you only ever forwarded to it.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> a Linux resolver that bridges the internet and the AD domain, so any host on the network can point at Rocky and resolve both. You now control name resolution for the lab, the lever behind most network troubleshooting. Next, <a href="/linux-lab-guide/labs/04-rsync-backups/">Lab 4</a> turns this same Rocky box into the backup server.
+</div>

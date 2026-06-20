@@ -1,0 +1,73 @@
+---
+title: Linux Lab Guide
+description: An exhaustive, hands-on Linux homelab build, SSH hardening through automated backups, built as one coherent multi-server network that mirrors a real small-business shop.
+template: doc
+tableOfContents: true
+---
+
+import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
+import LabStatusBoard from '../../components/LabStatusBoard.astro';
+
+A complete, reproducible Linux homelab in four labs. Not four disconnected tutorials: **one coherent multi-server build** that bridges Linux into the Active Directory domain from my [AD lab](https://chweaver.github.io/ad-lab-guide/) and mirrors how a real small-business network is run by an MSP.
+
+Every command is explained (flags included), every phase ends with explicit validation, and the per-phase status below reads from the guide itself, so the [portfolio topology](https://chweaver.github.io/portfolio/) lights up a server the moment its lab is done.
+
+<LinkButton href="/linux-lab-guide/labs/01-ssh-hardening/" variant="primary">Start with Lab 1: SSH Hardening</LinkButton>
+<LinkButton href="/linux-lab-guide/topology/" variant="secondary">See the live network topology</LinkButton>
+
+## Live build status
+
+<LabStatusBoard />
+
+## The dependency chain (read this first)
+
+The labs are ordered deliberately. Each one builds on the last, the way a real environment does:
+
+<CardGrid>
+  <Card title="1 · SSH Hardening + Key Auth" icon="seti:powershell">
+    Ubuntu primary, Rocky in an appendix. Key-based auth, a hardened `sshd` drop-in, ufw, and fail2ban. **The ed25519 keys generated here are reused by Lab 4** for passwordless rsync over SSH.
+  </Card>
+  <Card title="2 · Samba, Domain-Joined" icon="seti:folder">
+    Ubuntu joins `corp.lab`. A file server that authenticates against Active Directory instead of local accounts. **The direct bridge from Linux into the Windows shop.**
+  </Card>
+  <Card title="3 · Local DNS with BIND9" icon="seti:db">
+    Rocky stands up a caching/forwarding resolver that **conditionally forwards `corp.lab` to the AD DNS** (DC01), so Linux hosts resolve domain names. DNS is the #1 thing that breaks AD.
+  </Card>
+  <Card title="4 · Backups: rsync + cron" icon="seti:shell">
+    Rocky becomes the backup server. Incremental, space-efficient, logged, scheduled backups **over the hardened SSH from Lab 1**, with a proven restore. The 3-2-1 rule, made real.
+  </Card>
+</CardGrid>
+
+How the chain links up:
+
+- **Lab 1 enables Lab 4.** The backup job in Lab 4 logs in with a key generated and hardened in Lab 1, locked down with a forced `rrsync` command so a stolen key can only pull one read-only path.
+- **Labs 2 and 3 both integrate with Active Directory.** Samba joins the `corp.lab` domain (Lab 2) and BIND9 forwards `corp.lab` lookups to the domain controller (Lab 3). Both lean on the DC01 that already exists in the [AD lab](https://chweaver.github.io/ad-lab-guide/).
+
+## The network this builds
+
+Two routed subnets behind pfSense, plus an IoT segment, with the Linux servers slotting into the same network as the existing AD domain controller and Windows client:
+
+| Host | Subnet | Address | Built by |
+| --- | --- | --- | --- |
+| pfSense CE | gateway | 192.168.100.1 / .200.1 | (network lab) |
+| DC01 (corp.lab) | LAN | 192.168.100.5 | (AD lab) |
+| WS01 (Win 11) | LAN | 192.168.100.20 | (AD lab) |
+| ubuntu-base | LAN | 192.168.100.10 | **Labs 1 + 2** |
+| rocky-base | LAB200 | 192.168.200.12 | **Labs 3 + 4** |
+| IoT device | IoT VLAN | 192.168.30.x | (placeholder) |
+
+See the [full interactive topology](/linux-lab-guide/topology/), which marks each server done as you complete its lab.
+
+## How progress tracking works
+
+This is intentionally simple and honest, mirroring the [AD lab guide](https://chweaver.github.io/ad-lab-guide/):
+
+1. Every phase in every lab carries a literal **`Status:`** line (`not started`, `in progress`, or `done`), shown right under the phase heading.
+2. On each deploy, a small script (`scripts/gen_status.py`) parses those lines and writes `lab-status.json`, served at [`/linux-lab-guide/lab-status.json`](/linux-lab-guide/lab-status.json).
+3. The board above, the topology, and the portfolio all read that JSON. The portfolio fetches it live on load, so finishing a lab and pushing the guide updates the portfolio on the next visit, with no separate sync step.
+
+No backend, no login, no client-side database: just a status line in Markdown that flows all the way to the portfolio. To mark a phase done, flip its `Status:` line from `not started` to `done` and push.
+
+:::tip[Why per-phase, not per-step]
+Steps are the teaching detail; status is the signal. Tracking status at the phase level keeps the public view truthful and low-maintenance, and it matches how the AD lab already reports to the portfolio.
+:::

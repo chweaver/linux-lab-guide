@@ -1,0 +1,30 @@
+---
+title: Live network topology
+description: The full homelab network, internet through pfSense to the LAN, LAB200, and IoT subnets, with each Linux server lighting up green as its lab is completed.
+template: doc
+tableOfContents: false
+---
+
+import Topology from '../../components/Topology.astro';
+
+This is the network the four labs build, drawn live. Each server with a lab attached starts **pending**, switches to a dashed **in progress** ring while any of its labs is underway, and gets a green check when **every** lab that builds it is done. The same model drives the [portfolio](https://chweaver.github.io/portfolio/), so this graph and the portfolio stay in lockstep.
+
+<Topology />
+
+## How to read it
+
+- **pfSense** is the single router, firewall, and DHCP authority. Every subnet hangs off it.
+- **LAN (`192.168.100.0/24`)** holds the existing Active Directory infrastructure (DC01, WS01) from the [AD lab](https://chweaver.github.io/ad-lab-guide/), plus `ubuntu-base`, which Labs 1 and 2 harden and turn into a domain-joined Samba file server.
+- **LAB200 (`192.168.200.0/24`)** holds `rocky-base`, which Lab 3 turns into a BIND9 resolver and Lab 4 turns into the rsync backup target.
+- **IoT VLAN (`192.168.30.0/24`)** is an untrusted segment, shown as a placeholder until the real devices and addressing are set.
+
+## What the colors mean
+
+- **Cyan** nodes and edges belong to the LAN.
+- **Green** belongs to LAB200, and a **green check** on any node means its lab is complete (read live from `lab-status.json`).
+- **Amber** is the IoT segment.
+- Nodes labelled **established** (pfSense, DC01, WS01) are pre-existing infrastructure from the network and AD labs, not built by this guide.
+
+:::note[Addresses to verify]
+The IoT subnet and device addressing are placeholders, and the AD addresses come from the separate AD lab. All of these live in a single file (`src/data/topology.ts`), so correcting them is a one-file edit.
+:::

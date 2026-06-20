@@ -1,0 +1,28 @@
+{
+  "name": "linux-lab-guide",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interactive Linux homelab guide (Astro + Starlight) with per-phase status that drives a live network-topology view on the portfolio.",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "status": "python scripts/gen_status.py",
+    "build": "python scripts/gen_status.py && astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "check": "astro check",
+    "format": "prettier --write \"src/**/*.{ts,astro,css,mdx}\" \"*.{mjs,json,md}\""
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.32.0",
+    "astro": "^5.4.0",
+    "sharp": "^0.34.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "prettier": "^3.4.2",
+    "prettier-plugin-astro": "^0.14.1",
+    "typescript": "^5.7.3"
+  }
+}
