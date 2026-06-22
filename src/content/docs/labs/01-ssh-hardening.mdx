@@ -302,7 +302,7 @@ From a host **outside** `ignoreip`, make several failed attempts, then check the
 
 ```bash
 sudo fail2ban-client status sshd          # Currently banned: 1, with the IP listed
-sudo fail2ban-client set sshd unbanip 192.168.30.50
+sudo fail2ban-client set sshd unbanip 203.0.113.50
 ```
 
 Expected: the offending IP appears under "Banned IP list", then clears after the unban.

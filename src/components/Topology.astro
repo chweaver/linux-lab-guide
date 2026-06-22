@@ -26,10 +26,11 @@ const pfBottom = chain.pfsense.y + chain.pfsense.h;
 // Subnet group boxes across the bottom.
 const boxTop = 312;
 const boxH = 240;
+// Two subnets fill the canvas: LAN (DC01, WS01, ubuntu) on the left, LAB200
+// (rocky) on the right. LAN is wider because it holds more hosts.
 const boxes: Record<string, { x: number; w: number }> = {
-  lan: { x: 24, w: 470 },
-  lab200: { x: 514, w: 196 },
-  iot: { x: 730, w: 186 },
+  lan: { x: 24, w: 560 },
+  lab200: { x: 604, w: 312 },
 };
 
 const CARD_W = 138;
@@ -72,14 +73,12 @@ function icon(type: TopoNode['type']): string {
       return `<rect x="0" y="0" width="14" height="5" rx="1" fill="currentColor" opacity="0.9"/><rect x="0" y="7" width="14" height="5" rx="1" fill="currentColor" opacity="0.55"/><circle cx="3" cy="2.5" r="1" fill="#0a0e14"/><circle cx="3" cy="9.5" r="1" fill="#0a0e14"/>`;
     case 'workstation':
       return `<rect x="0" y="0" width="14" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 11h4M7 9v2" stroke="currentColor" stroke-width="1.4"/>`;
-    case 'iot':
-      return `<circle cx="7" cy="9" r="2" fill="currentColor"/><path d="M3 6a6 6 0 0 1 8 0 M5 8a3 3 0 0 1 4 0" fill="none" stroke="currentColor" stroke-width="1.3"/>`;
   }
 }
 ---
 
 <figure class="topo">
-  <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Homelab network topology, internet through pfSense to the LAN, LAB200, and IoT subnets" xmlns="http://www.w3.org/2000/svg">
+  <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Homelab network topology, internet through pfSense to the LAN and LAB200 subnets" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <marker id="arrow" viewBox="0 -5 10 10" refX="8" refY="0" markerWidth="6" markerHeight="6" orient="auto">
         <path d="M0,-5L10,0L0,5" fill="#475569"></path>
