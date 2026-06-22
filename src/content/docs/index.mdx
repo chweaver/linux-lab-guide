@@ -45,7 +45,7 @@ How the chain links up:
 
 ## The network this builds
 
-Two routed subnets behind pfSense, plus an IoT segment, with the Linux servers slotting into the same network as the existing AD domain controller and Windows client:
+Two routed subnets behind pfSense, with the Linux servers slotting into the same network as the existing AD domain controller and Windows client:
 
 | Host | Subnet | Address | Built by |
 | --- | --- | --- | --- |
@@ -54,7 +54,6 @@ Two routed subnets behind pfSense, plus an IoT segment, with the Linux servers s
 | WS01 (Win 11) | LAN | 192.168.100.20 | (AD lab) |
 | ubuntu-base | LAN | 192.168.100.10 | **Labs 1 + 2** |
 | rocky-base | LAB200 | 192.168.200.12 | **Labs 3 + 4** |
-| IoT device | IoT VLAN | 192.168.30.x | (placeholder) |
 
 See the [full interactive topology](/linux-lab-guide/topology/), which marks each server done as you complete its lab.
 
