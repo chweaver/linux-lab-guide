@@ -16,8 +16,8 @@ export default defineConfig({
     starlight({
       title: 'Linux Lab Guide',
       description:
-        'An exhaustive, hands-on Linux homelab build: SSH hardening, AD-joined Samba, BIND9 DNS, and automated rsync backups. One coherent multi-server network, not four disconnected tutorials.',
-      tagline: 'SSH, Samba, BIND9, and backups, built as one coherent network.',
+        'An exhaustive, hands-on Linux homelab build: SSH hardening, AD-joined Samba, BIND9 DNS, rsync backups, central logging, Prometheus monitoring on Docker, and automated patching. One coherent multi-server network, not seven disconnected tutorials.',
+      tagline: 'SSH through automated patching, built as one coherent network.',
       customCss: ['./src/styles/theme.css'],
       social: {
         github: 'https://github.com/chweaver/linux-lab-guide',
@@ -29,12 +29,15 @@ export default defineConfig({
       sidebar: [
         { label: 'Overview', link: '/' },
         {
-          label: 'The four labs',
+          label: 'The seven labs',
           items: [
             { label: '1. SSH Hardening + Key Auth', link: '/labs/01-ssh-hardening/' },
             { label: '2. Samba, Domain-Joined', link: '/labs/02-samba-domain/' },
             { label: '3. Local DNS with BIND9', link: '/labs/03-bind9-dns/' },
             { label: '4. Backups: rsync + cron', link: '/labs/04-rsync-backups/' },
+            { label: '5. Centralized Logging', link: '/labs/05-central-logging/' },
+            { label: '6. Monitoring + Docker', link: '/labs/06-monitoring/' },
+            { label: '7. Automated Patching', link: '/labs/07-patch-automation/' },
           ],
         },
         { label: 'Live network topology', link: '/topology/' },

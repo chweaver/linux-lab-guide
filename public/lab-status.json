@@ -1,13 +1,13 @@
 {
-  "generatedAt": "2026-06-20T20:13:08.755913+00:00",
+  "generatedAt": "2026-07-19T22:19:32.782077+00:00",
   "guideBaseUrl": "https://chweaver.github.io/linux-lab-guide/",
   "summary": {
-    "totalLabs": 4,
+    "totalLabs": 7,
     "labsComplete": 0,
-    "totalPhases": 19,
+    "totalPhases": 34,
     "phasesDone": 0,
     "phasesNext": 0,
-    "phasesPlanned": 19,
+    "phasesPlanned": 34,
     "overallPct": 0
   },
   "labs": [
@@ -46,6 +46,36 @@
       "title": "Backup Automation with rsync + cron",
       "order": 4,
       "path": "labs/04-rsync-backups/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    },
+    {
+      "id": "syslog",
+      "title": "Centralized Logging with rsyslog",
+      "order": 5,
+      "path": "labs/05-central-logging/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    },
+    {
+      "id": "monitoring",
+      "title": "Monitoring with node_exporter + Prometheus",
+      "order": 6,
+      "path": "labs/06-monitoring/",
+      "status": "planned",
+      "pct": 0,
+      "phasesTotal": 5,
+      "phasesDone": 0
+    },
+    {
+      "id": "patching",
+      "title": "Automated Patching + Snapshot Rollback",
+      "order": 7,
+      "path": "labs/07-patch-automation/",
       "status": "planned",
       "pct": 0,
       "phasesTotal": 5,
@@ -204,6 +234,126 @@
       "title": "Phase E: Validation (the part that actually matters)",
       "status": "planned",
       "anchor": "phase-e-validation-the-part-that-actually-matters"
+    },
+    {
+      "id": "syslog-p1",
+      "labId": "syslog",
+      "labTitle": "Centralized Logging with rsyslog",
+      "title": "Phase A: Provision ops01 and register it in DNS",
+      "status": "planned",
+      "anchor": "phase-a-provision-ops01-and-register-it-in-dns"
+    },
+    {
+      "id": "syslog-p2",
+      "labId": "syslog",
+      "labTitle": "Centralized Logging with rsyslog",
+      "title": "Phase B: The collector",
+      "status": "planned",
+      "anchor": "phase-b-the-collector"
+    },
+    {
+      "id": "syslog-p3",
+      "labId": "syslog",
+      "labTitle": "Centralized Logging with rsyslog",
+      "title": "Phase C: The senders",
+      "status": "planned",
+      "anchor": "phase-c-the-senders"
+    },
+    {
+      "id": "syslog-p4",
+      "labId": "syslog",
+      "labTitle": "Centralized Logging with rsyslog",
+      "title": "Phase D: Read the aggregate like a SOC",
+      "status": "planned",
+      "anchor": "phase-d-read-the-aggregate-like-a-soc"
+    },
+    {
+      "id": "syslog-p5",
+      "labId": "syslog",
+      "labTitle": "Centralized Logging with rsyslog",
+      "title": "Phase E: Validation",
+      "status": "planned",
+      "anchor": "phase-e-validation"
+    },
+    {
+      "id": "monitoring-p1",
+      "labId": "monitoring",
+      "labTitle": "Monitoring with node_exporter + Prometheus",
+      "title": "Phase A: Docker on ops01",
+      "status": "planned",
+      "anchor": "phase-a-docker-on-ops01"
+    },
+    {
+      "id": "monitoring-p2",
+      "labId": "monitoring",
+      "labTitle": "Monitoring with node_exporter + Prometheus",
+      "title": "Phase B: node_exporter on every host",
+      "status": "planned",
+      "anchor": "phase-b-node-exporter-on-every-host"
+    },
+    {
+      "id": "monitoring-p3",
+      "labId": "monitoring",
+      "labTitle": "Monitoring with node_exporter + Prometheus",
+      "title": "Phase C: Prometheus + Grafana under Compose",
+      "status": "planned",
+      "anchor": "phase-c-prometheus-grafana-under-compose"
+    },
+    {
+      "id": "monitoring-p4",
+      "labId": "monitoring",
+      "labTitle": "Monitoring with node_exporter + Prometheus",
+      "title": "Phase D: Wire up Grafana",
+      "status": "planned",
+      "anchor": "phase-d-wire-up-grafana"
+    },
+    {
+      "id": "monitoring-p5",
+      "labId": "monitoring",
+      "labTitle": "Monitoring with node_exporter + Prometheus",
+      "title": "Phase E: Validation",
+      "status": "planned",
+      "anchor": "phase-e-validation"
+    },
+    {
+      "id": "patching-p1",
+      "labId": "patching",
+      "labTitle": "Automated Patching + Snapshot Rollback",
+      "title": "Phase A: The policy before the tooling",
+      "status": "planned",
+      "anchor": "phase-a-the-policy-before-the-tooling"
+    },
+    {
+      "id": "patching-p2",
+      "labId": "patching",
+      "labTitle": "Automated Patching + Snapshot Rollback",
+      "title": "Phase B: Ubuntu, unattended-upgrades",
+      "status": "planned",
+      "anchor": "phase-b-ubuntu-unattended-upgrades"
+    },
+    {
+      "id": "patching-p3",
+      "labId": "patching",
+      "labTitle": "Automated Patching + Snapshot Rollback",
+      "title": "Phase C: Rocky, dnf-automatic",
+      "status": "planned",
+      "anchor": "phase-c-rocky-dnf-automatic"
+    },
+    {
+      "id": "patching-p4",
+      "labId": "patching",
+      "labTitle": "Automated Patching + Snapshot Rollback",
+      "title": "Phase D: The patch window, rehearsed",
+      "status": "planned",
+      "anchor": "phase-d-the-patch-window-rehearsed"
+    },
+    {
+      "id": "patching-p5",
+      "labId": "patching",
+      "labTitle": "Automated Patching + Snapshot Rollback",
+      "title": "Phase E: Validation",
+      "status": "planned",
+      "anchor": "phase-e-validation"
     }
   ]
 }

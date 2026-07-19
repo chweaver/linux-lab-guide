@@ -1,15 +1,18 @@
 # Linux Lab Guide
 
-An exhaustive, hands-on Linux homelab guide built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build). Four chained labs that build one coherent multi-server network: SSH hardening, an AD-joined Samba file server, a BIND9 resolver, and automated rsync backups. Per-phase status is published with the site and drives a live network-topology view here and on the [portfolio](https://github.com/chweaver/portfolio).
+An exhaustive, hands-on Linux homelab guide built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build). Seven chained labs that build one coherent multi-server network: SSH hardening, an AD-joined Samba file server, a BIND9 resolver, automated rsync backups, centralized rsyslog logging, Prometheus + Grafana monitoring on Docker, and automated patching with a rehearsed rollback. Per-phase status is published with the site and drives a live network-topology view here and on the [portfolio](https://github.com/chweaver/portfolio).
 
 Live at `https://chweaver.github.io/linux-lab-guide/`.
 
-## The four labs
+## The seven labs
 
 1. **SSH Hardening + Key Auth** (Ubuntu, Rocky appendix). The ed25519 keys here are reused by Lab 4.
 2. **Samba File Server, domain-joined** (Ubuntu joins `corp.lab`). The bridge from Linux into Active Directory.
 3. **Local DNS with BIND9** (Rocky). Caching/forwarding resolver that conditionally forwards `corp.lab` to the AD DNS.
 4. **Backup Automation with rsync + cron** (Rocky as backup server). Incremental, restore-tested backups over the hardened SSH from Lab 1.
+5. **Centralized Logging with rsyslog** (new `ops01` collector). TCP forwarding with disk-backed queues from the fleet, addressed by the Lab 3 DNS names, read like a SOC would.
+6. **Monitoring with node_exporter + Prometheus** (Docker Compose on `ops01`). Grafana dashboards, source-scoped firewall rules, and a failure-detection test that gets proven, not assumed.
+7. **Automated Patching + Snapshot Rollback** (all hosts). `unattended-upgrades` and `dnf-automatic` for nightly security fixes, a snapshot-first window for the rest, audited through the Lab 5 logs.
 
 The order is a deliberate dependency chain. See the [Overview](src/content/docs/index.mdx) for how the labs link together.
 

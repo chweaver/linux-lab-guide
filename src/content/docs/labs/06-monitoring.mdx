@@ -1,0 +1,303 @@
+---
+title: Monitoring with node_exporter + Prometheus
+description: Put node_exporter on every Linux host as a hardened systemd service, then deploy Prometheus and Grafana with Docker Compose on ops01, scraping by the DNS names from Lab 3, with dashboards and a provable failure-detection test.
+labId: monitoring
+labOrder: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `ops01` (`192.168.200.20`, LAB200) runs the stack in Docker. **Monitored:** `ubuntu-base` (`192.168.100.10`), `rocky-base` (`192.168.200.12`), and `ops01` itself.
+
+## Objective
+
+Give the fleet a live metrics view: `node_exporter` on each host exposing CPU, memory, disk, and network numbers; Prometheus scraping and storing them; Grafana drawing them. The server side runs as containers under Docker Compose on `ops01`, a complete self-hosted deployment: official images, pinned versions, persistent volumes, restart policies, and a config that survives a reboot.
+
+**Why it matters for an MSP:** monitoring is the difference between "the client called, the server is down" and "we called the client before they noticed." It is the core of what an RMM does, built here from the standard open-source parts. And Docker is how an MSP ships self-hosted services repeatably: the compose file in this lab is a deployment you can read, version, and rebuild from scratch, which is the skill clients pay for.
+
+**Prerequisites:**
+
+- [Lab 1](/linux-lab-guide/labs/01-ssh-hardening/) done, and applied to `ops01` in [Lab 5](/linux-lab-guide/labs/05-central-logging/). The Prometheus admin UI is reached over that hardened SSH.
+- [Lab 3](/linux-lab-guide/labs/03-bind9-dns/) done. Prometheus scrapes targets **by name** through the `lab.local` resolver, including the `ops01` record added in Lab 5.
+- pfSense permitting `ops01` to reach `ubuntu-base:9100/tcp` (LAB200-to-LAN, same pattern as before), and your workstation to reach `ops01:3000/tcp` for Grafana.
+- A snapshot named `pre-monitoring` on all three hosts.
+
+## Phase A: Docker on ops01
+
+**Status:** Not started.
+
+Install Docker Engine from Docker's own repository, not the `docker.io` package in Ubuntu's archive: the vendor repo carries the current engine and the Compose v2 plugin as one coherent set.
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+```
+
+- The `keyrings` steps download Docker's GPG signing key and register the repo as signed by exactly that key (`signed-by=`), so apt will reject a tampered mirror.
+- `$(dpkg --print-architecture)` and `$(. /etc/os-release && echo $VERSION_CODENAME)` fill in `amd64` and the Ubuntu codename, so the same line works on any machine.
+- `docker-ce` is the engine, `containerd.io` the runtime under it, `docker-compose-plugin` gives you `docker compose` (v2, a subcommand, not the old `docker-compose` binary).
+
+Prove the engine works:
+
+```bash
+sudo docker run --rm hello-world
+```
+
+- `--rm` deletes the container when it exits, so a test does not leave litter.
+
+<Aside type="caution" title="The docker group is root by another name">
+Adding a user to the `docker` group (`sudo usermod -aG docker vybz`) removes the `sudo` from every docker command, and also makes that user root-equivalent: anyone who can start containers can mount `/` and own the host. In this lab that tradeoff is acceptable on your own ops box. On a client server, leave it out and type `sudo`.
+</Aside>
+
+## Phase B: node_exporter on every host
+
+**Status:** Not started.
+
+`node_exporter` is a single static binary that serves host metrics on `:9100/metrics`. Install it the same way on `ubuntu-base` and `rocky-base`: pinned version, dedicated user, hardened systemd unit. (`ops01` gets its exporter as a container in Phase C, so you see both deployment styles.)
+
+```bash
+curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.9.1/node_exporter-1.9.1.linux-amd64.tar.gz
+tar -xzf node_exporter-1.9.1.linux-amd64.tar.gz
+sudo install node_exporter-1.9.1.linux-amd64/node_exporter /usr/local/bin/
+sudo useradd -r -s /usr/sbin/nologin node_exporter
+```
+
+- Pinning `v1.9.1` beats "latest": every host runs the same exporter and an upgrade is a deliberate act, not a surprise.
+- `install` copies the binary with sane ownership and mode in one step.
+- `useradd -r` creates a **system account** (no home, low UID); `-s /usr/sbin/nologin` means nobody can ever log in as it (on Rocky the shell is `/sbin/nologin`). Metrics collection does not need shell access, so it does not get any.
+
+```ini title="/etc/systemd/system/node_exporter.service"
+[Unit]
+Description=Prometheus node_exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/node_exporter --web.listen-address=:9100
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- `User=`/`Group=`: run as the locked-down account, never root.
+- `NoNewPrivileges=true`: the process and its children can never gain privileges, even through setuid binaries.
+- `ProtectSystem=strict` and `ProtectHome=true`: the filesystem is read-only to the service and home directories are invisible. An exporter reads `/proc` and `/sys`; it has no business writing anywhere.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now node_exporter
+curl -s localhost:9100/metrics | head -5
+```
+
+Expected: a screen of `# HELP` and metric lines. That URL is the entire exporter interface.
+
+### Open 9100 to the scraper only
+
+A metrics endpoint leaks a surprising amount (kernel, mounts, load patterns). Only `ops01` needs to read it, so only `ops01` may. On `ubuntu-base`:
+
+```bash
+sudo ufw allow from 192.168.200.20 to any port 9100 proto tcp
+```
+
+On `rocky-base`, firewalld expresses a source-scoped permit as a rich rule:
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.200.20" port port="9100" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+- A rich rule is firewalld's syntax for conditions beyond "open this port": here, accept 9100/tcp **only** when the source is the monitoring server. Anyone else gets nothing.
+
+## Phase C: Prometheus + Grafana under Compose
+
+**Status:** Not started.
+
+Everything lives in one directory on `ops01`, which is the deployment: copy the directory, run one command, get the stack.
+
+```yaml title="/opt/monitoring/docker-compose.yml"
+services:
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    restart: unless-stopped
+    dns:
+      - 192.168.200.12
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.9.1
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - '--path.rootfs=/host'
+
+  grafana:
+    image: grafana/grafana-oss:12.0.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prom-data:
+  grafana-data:
+```
+
+Every line earns its keep:
+
+- `image: ...:v3.4.0`: official images, **pinned tags**. `latest` on a monitoring stack means the tool you debug with changes underneath you.
+- `restart: unless-stopped`: the engine restarts these containers after a crash or a host reboot, unless you stopped them on purpose. This one line is the "survives a reboot" requirement.
+- `dns: 192.168.200.12`: the Prometheus container resolves through `rocky-base`, so the scrape targets below can be `lab.local` names. Containers do not inherit the host's resolver config cleanly; stating it here makes the dependency on Lab 3 explicit.
+- `ports: "127.0.0.1:9090:9090"`: Prometheus binds to **loopback only**. Its admin UI has no authentication, so it never faces the network; you reach it through an SSH tunnel (below).
+- `ports: "3000:3000"`: Grafana, which does have logins, is the one thing exposed.
+- `volumes: prom-data`, `grafana-data`: **named volumes** hold the metrics database and Grafana's state, so `docker compose down` and image upgrades do not erase history.
+- The `node-exporter` service is `ops01`'s own exporter: `pid: host` and the read-only `/host` mount let it read the real host's `/proc` through `--path.rootfs`, and Prometheus reaches it over the compose network by service name, no firewall rule needed.
+
+The scrape config:
+
+```yaml title="/opt/monitoring/prometheus.yml"
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets:
+          - ubuntu.lab.local:9100
+          - rocky.lab.local:9100
+          - node-exporter:9100
+```
+
+- `scrape_interval: 15s`: how often every target is polled. 15s is a sane default; shorter buys resolution at the cost of storage.
+- `targets`: two hosts by their Lab 3 names, plus `ops01`'s exporter by its compose service name. If DNS dies, monitoring says so, which is exactly the dependency an MSP wants surfaced.
+
+Launch it:
+
+```bash
+cd /opt/monitoring
+sudo docker compose up -d
+sudo docker compose ps
+```
+
+- `up -d` creates and starts everything **detached** (in the background). `ps` should show all three services `Up`.
+
+Let the LAN reach Grafana:
+
+```bash
+sudo ufw allow from 192.168.100.0/24 to any port 3000 proto tcp
+```
+
+## Phase D: Wire up Grafana
+
+**Status:** Not started.
+
+From your workstation, browse to `http://192.168.200.20:3000`. First login is `admin` / `admin`; Grafana forces a password change immediately, do not skip it with something weak, this UI faces your network.
+
+### Add Prometheus as a data source
+
+Connections, then Data sources, then Prometheus. Set the URL to:
+
+```text
+http://prometheus:9090
+```
+
+That hostname is the **compose service name**: Grafana and Prometheus share the compose network, where every service resolves by its name. This is also why the loopback-only port binding does not matter here, containers talk container-to-container, not through the host's published ports.
+
+Click "Save & test". Expected: the data source check passes.
+
+### Import a dashboard
+
+Dashboards, then New, then Import, and enter dashboard ID `1860` ("Node Exporter Full", a community standard). Pick your Prometheus data source when asked. You get per-host CPU, memory, disk, filesystem, and network panels for free; the host dropdown at the top switches between all three machines.
+
+### Reach the Prometheus UI when you need it
+
+The raw Prometheus UI is where you test queries and check target health, and it is loopback-only by design. Reach it with a port forward over the hardened SSH from Lab 1:
+
+```bash
+ssh -L 9090:localhost:9090 vybz@192.168.200.20
+```
+
+- `-L 9090:localhost:9090`: forward your local port 9090 to `localhost:9090` **as seen from ops01**. While the session is open, `http://localhost:9090` in your browser is the Prometheus UI, and nothing was ever exposed to the network.
+
+Check Status, then Targets. Expected: all three `node` targets **UP**.
+
+## Phase E: Validation
+
+**Status:** Not started.
+
+### Every target reports up
+
+Query Prometheus from `ops01` (the API answers on the loopback binding):
+
+```bash
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | python3 -m json.tool | grep -E '"instance"|\bvalue\b' -A1
+```
+
+Expected: three results, each with value `"1"`. `up` is Prometheus's own per-target health metric, 1 for a successful last scrape, 0 for a failure, which makes it the first query in every outage.
+
+### Failure is detected, and quickly
+
+Prove the system notices a dead host, the entire reason it exists:
+
+```bash
+# On ubuntu-base:
+sudo systemctl stop node_exporter
+```
+
+Within one scrape interval, the Targets page shows `ubuntu.lab.local:9100` **DOWN**, `up` for that instance reads `0`, and the Grafana panels for the host flatline. Restart it and watch recovery:
+
+```bash
+sudo systemctl start node_exporter
+```
+
+Expected: back to UP on the next scrape. Detection time is bounded by `scrape_interval`, a fact worth knowing before you promise a client a response time.
+
+### The stack survives a reboot
+
+```bash
+sudo reboot
+# after it returns:
+sudo docker compose -f /opt/monitoring/docker-compose.yml ps
+```
+
+Expected: all three containers `Up` without you touching anything (`restart: unless-stopped` plus the engine's boot service), Grafana still knows its data source and dashboard, and history from before the reboot is still on the graphs (the named volumes). A monitoring stack that needs manual resurrection after a power cut monitors nothing.
+
+### The dashboard tells the truth
+
+Generate load on `rocky-base` (`sha256sum /dev/zero` and let it run for a minute, then Ctrl-C) and watch the CPU panel for `rocky.lab.local` climb and fall. A graph you have seen respond to a known cause is a graph you can trust during an unknown one.
+
+## Troubleshooting
+
+- **A target shows DOWN:** work outward from the exporter. `curl localhost:9100/metrics` on the host (service running), then `curl http://ubuntu.lab.local:9100/metrics` from `ops01` (DNS plus firewall path). A LAN target needs the pfSense LAB200-to-LAN permit and the host's source-scoped firewall rule.
+- **Targets show as unresolvable:** the container cannot resolve `lab.local`. Confirm the `dns: 192.168.200.12` line, then `sudo docker compose exec prometheus nslookup ubuntu.lab.local`.
+- **Grafana's data source test fails:** the URL must be `http://prometheus:9090` (service name), not `localhost:9090`. Inside the Grafana container, `localhost` is the Grafana container.
+- **Containers gone after reboot:** you ran `docker compose stop` before rebooting (respected by `unless-stopped`), or the compose file moved. `sudo docker compose up -d` from `/opt/monitoring` and re-test.
+- **Dashboard is empty but targets are UP:** the time range in Grafana's picker is off, or the data source default changed. Check the panel's data source and the last-15-minutes range first.
+- **`node_exporter` will not start on Rocky:** the unit's `nologin` path differs (`/sbin/nologin`). `journalctl -u node_exporter -e` names the failure.
+
+<Aside type="caution" title="Rollback">
+On `ops01`: `cd /opt/monitoring && sudo docker compose down` stops the stack (`down -v` also deletes the metric history in the volumes). On the monitored hosts: `sudo systemctl disable --now node_exporter`, remove the unit file and binary, and drop the 9100 firewall rules. Or revert the `pre-monitoring` snapshots.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> a fleet that reports its own health every fifteen seconds, dashboards a client could stand to look at, and a containerized deployment you can rebuild from one directory. You will know a server is sick before anyone calls. Next, <a href="/linux-lab-guide/labs/07-patch-automation/">Lab 7</a> makes the fleet maintain itself, patching on a schedule with a rollback you have rehearsed.
+</div>

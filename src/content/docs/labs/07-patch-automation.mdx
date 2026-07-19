@@ -1,0 +1,252 @@
+---
+title: Automated Patching + Snapshot Rollback
+description: Put security patching on autopilot with unattended-upgrades on Ubuntu and dnf-automatic on Rocky, define a snapshot-first patch window for everything else, and rehearse the rollback so it works the night you need it.
+labId: patching
+labOrder: 7
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Hosts:** all three Linux servers: `ubuntu-base` (`192.168.100.10`), `rocky-base` (`192.168.200.12`), `ops01` (`192.168.200.20`).
+
+## Objective
+
+Automate what should be automatic and control what should be controlled. Security updates apply themselves nightly on every host, on both package families (`unattended-upgrades` on Ubuntu, `dnf-automatic` on Rocky). Everything else waits for a monthly patch window that starts with a snapshot and ends with service checks, and you rehearse the rollback once so it is a procedure, not a prayer.
+
+**Why it matters for an MSP:** patch management is a line item on every managed-services contract and a control in every compliance framework. Unpatched servers are how ransomware gets in; careless patching is how Saturday outages happen. The whole discipline is holding both truths at once: patch fast, and always have a way back. This lab is that discipline, in config files.
+
+**Prerequisites:**
+
+- [Lab 4](/linux-lab-guide/labs/04-rsync-backups/) done. A restore-tested backup is the rollback of last resort, and no patch window opens without one.
+- [Lab 5](/linux-lab-guide/labs/05-central-logging/) and [Lab 6](/linux-lab-guide/labs/06-monitoring/) done. Patch runs leave their evidence in the central logs, and the dashboards show you a host misbehaving after a window.
+- Snapshot capability on all three VMs, and a snapshot named `pre-patching` before you start this lab itself.
+
+## Phase A: The policy before the tooling
+
+**Status:** Not started.
+
+Tools enforce a policy; they cannot substitute for one. Write this down before configuring anything, because every config value below traces back to a line here:
+
+- **Security updates: automatic, nightly, every host.** The window between a CVE announcement and exploitation is days, sometimes hours. Waiting for a human loses that race.
+- **Feature and version updates: manual, in a monthly window.** These are the updates that change behavior and break services, so they happen when you are watching, not at 3 a.m.
+- **No patch without a way back.** The window opens with a VM snapshot on every host in scope, named `pre-patch-YYYYMMDD`, and the Lab 4 backup must have succeeded within the last 24 hours. Check it, do not assume it:
+
+```bash
+ls -lt /backups/ubuntu-share/ | head -3
+```
+
+- **No reboot without a decision.** The tools below are configured to never reboot on their own. Kernel updates set a flag; you reboot in the window, one host at a time, watching the Lab 6 dashboard as each comes back.
+
+<Aside type="tip" title="Why snapshot-first is non-negotiable">
+A package-level undo (`dnf history undo`, reinstalling a prior `.deb`) can miss maintainer scripts, config migrations, and dependency chains. A snapshot rolls the whole machine back to a known-good moment in minutes, no forensics required. Snapshots are the fast rollback; the Lab 4 backups protect the data that changed since. You need both, which is why both are prerequisites.
+</Aside>
+
+## Phase B: Ubuntu, unattended-upgrades
+
+**Status:** Not started.
+
+On **both** `ubuntu-base` and `ops01`:
+
+```bash
+sudo apt install -y unattended-upgrades
+```
+
+Two files drive it. The first turns the machinery on:
+
+```text title="/etc/apt/apt.conf.d/20auto-upgrades"
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+```
+
+- `Update-Package-Lists "1"`: refresh apt's view of the archives daily, so "what needs patching" is never stale.
+- `Unattended-Upgrade "1"`: run the upgrader daily. The actual timing comes from the `apt-daily` and `apt-daily-upgrade` systemd timers, not cron.
+
+The second says what may be installed. The stock file is long and mostly comments; these are the lines that matter, set them and leave the rest:
+
+```text title="/etc/apt/apt.conf.d/50unattended-upgrades (key lines)"
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+```
+
+- `Allowed-Origins` with only the `-security` pockets: this is the policy from Phase A as config. The `-updates` pocket (bug fixes and feature updates) stays commented out, so automation touches security fixes and nothing else.
+- `Remove-Unused-Dependencies "true"`: autoremove orphans after upgrades, so automated patching does not slowly silt up the disk.
+- `Automatic-Reboot "false"`: the no-surprise-reboots line. When a kernel update lands, Ubuntu writes `/var/run/reboot-required` and you act on it in the window.
+
+Confirm the timers exist and are queued:
+
+```bash
+systemctl list-timers 'apt-daily*' --no-pager
+```
+
+Expected: `apt-daily.timer` and `apt-daily-upgrade.timer` with a `NEXT` time. The run times include a large randomized delay by design, so a fleet of machines does not hammer the mirrors at the same second.
+
+## Phase C: Rocky, dnf-automatic
+
+**Status:** Not started.
+
+On `rocky-base`:
+
+```bash
+sudo dnf install -y dnf-automatic
+```
+
+One config file:
+
+```ini title="/etc/dnf/automatic.conf (key lines)"
+[commands]
+upgrade_type = security
+download_updates = yes
+apply_updates = yes
+
+[emitters]
+emit_via = stdio
+```
+
+- `upgrade_type = security`: only updates with a security advisory, the same policy line as Ubuntu's `Allowed-Origins`. (`default` would take everything, which belongs in the window.)
+- `download_updates = yes` and `apply_updates = yes`: fetch **and install**. The classic dnf-automatic trap is leaving `apply_updates = no`, which downloads patches forever and applies none of them while you believe you are covered.
+- `emit_via = stdio`: results go to standard output, which lands in the systemd journal, which rsyslog forwards to `ops01`. The Lab 5 pipeline is now your patch audit trail, no extra work.
+
+dnf-automatic is timer-driven; enable the timer, not the service:
+
+```bash
+sudo systemctl enable --now dnf-automatic.timer
+systemctl list-timers 'dnf-automatic*' --no-pager
+```
+
+Expected: a `NEXT` run time (6 a.m. daily by default, with a random delay).
+
+Rocky's reboot flag is a query, not a file:
+
+```bash
+sudo dnf needs-restarting -r ; echo "exit=$?"
+```
+
+- `-r` asks one question: does this host need a reboot for updates already applied? Exit `1` means yes. This is the Rocky half of the reboot check in your window checklist.
+
+## Phase D: The patch window, rehearsed
+
+**Status:** Not started.
+
+Run one full window now, on the whole fleet, including the rollback drill. Doing it once while nothing is broken is what makes it boring later, and boring is the goal.
+
+### 1. Snapshot, then patch
+
+Snapshot all three VMs as `pre-patch-YYYYMMDD`, verify last night's backup (Phase A), then apply the held-back, non-security updates deliberately:
+
+```bash
+# ubuntu-base and ops01:
+sudo apt update && sudo apt full-upgrade
+
+# rocky-base:
+sudo dnf upgrade
+```
+
+- `apt full-upgrade` (unlike plain `upgrade`) may add or remove packages to complete an upgrade, which is what a real window needs; read the summary it prints before confirming.
+- Plain `dnf upgrade` takes everything current. Read the transaction summary, particularly anything being **removed**.
+
+### 2. Verify the chain still works
+
+The labs you have built are the checklist. After patching and any needed reboots (`/var/run/reboot-required` on the Ubuntu boxes, `needs-restarting -r` on Rocky), every prior lab's service gets its one-line proof:
+
+```bash
+ssh vybz@192.168.100.10 "echo lab1 ok"          # hardened SSH answers
+smbclient -L //192.168.100.10 -U testuser       # Lab 2: shares list
+dig @192.168.200.12 dc01.corp.lab +short        # Lab 3: resolver + AD forward
+sudo systemctl status backup.timer --no-pager   # Lab 4: schedule intact
+logger -t patchwindow "post-patch check" && \
+  ssh vybz@192.168.200.20 "grep patchwindow /var/log/central/*/patchwindow.log"  # Lab 5
+curl -s http://192.168.200.20:3000/api/health   # Lab 6: Grafana healthy
+```
+
+Anything that fails, you catch now, inside the window, with the snapshot minutes old.
+
+### 3. Rehearse the rollback
+
+Pick the least critical host (`ops01` is a fine choice), revert it to `pre-patch-YYYYMMDD`, and confirm its services return (Grafana answers, forwarded logs flow). Then re-apply the patches. Yes, on purpose: reverting costs ten minutes today and proves the seatbelt latches. The first time you do this must not be during an outage.
+
+Rocky also gives you a package-level undo worth knowing for a single bad package, when a full revert is overkill:
+
+```bash
+sudo dnf history            # list transactions, note the ID
+sudo dnf history info 12    # what exactly transaction 12 changed
+sudo dnf history undo 12    # reverse it
+```
+
+- `history undo` reverses one transaction: downgrades what it upgraded, removes what it installed. Check `history info` first so you know the blast radius, and remember its limits from Phase A: it does not undo config migrations.
+
+## Phase E: Validation
+
+**Status:** Not started.
+
+### The automation would act (dry run)
+
+On the Ubuntu hosts:
+
+```bash
+sudo unattended-upgrade --dry-run -v
+```
+
+- `--dry-run` walks the full decision, package selection included, and changes nothing; `-v` shows the reasoning. Expected: the allowed origins list shows only `-security` pockets, and either "No packages found that can be upgraded" or a list of pending security fixes it would take.
+
+On `rocky-base`, run the real thing once by hand instead of waiting for the timer:
+
+```bash
+sudo systemctl start dnf-automatic.service
+journalctl -u dnf-automatic.service --no-pager | tail
+```
+
+Expected: a completed run, listing security updates applied or reporting none available.
+
+### The schedule is live
+
+```bash
+systemctl list-timers 'apt-daily*' --no-pager      # Ubuntu hosts
+systemctl list-timers 'dnf-automatic*' --no-pager  # rocky-base
+```
+
+Expected: every timer shows a `NEXT` time. A timer with no next fire is disabled, which is silent non-coverage.
+
+### The evidence reached the collector
+
+On `ops01`, find the patch activity in the central logs without logging into the fleet:
+
+```bash
+grep -ri "unattended-upgrade" /var/log/central/ubuntu-base/ | tail -3
+grep -ri "dnf-automatic" /var/log/central/rocky-base/ | tail -3
+```
+
+Expected: dated lines from each host's runs. When a client or an auditor asks "prove these servers are patched", this directory is the answer, which is the Lab 5 tie-in paying rent.
+
+### No host silently needs a reboot
+
+```bash
+for h in 192.168.100.10 192.168.200.20; do
+  ssh vybz@$h '[ -f /var/run/reboot-required ] && echo "$(hostname): REBOOT NEEDED" || echo "$(hostname): clear"'
+done
+ssh vybz@192.168.200.12 'sudo dnf needs-restarting -r >/dev/null; [ $? -eq 1 ] && echo "rocky-base: REBOOT NEEDED" || echo "rocky-base: clear"'
+```
+
+Expected: three definitive answers, gathered over the Lab 1 keys in seconds. Fold this loop into the monthly window checklist; a kernel patch that never gets its reboot is a patch you do not have.
+
+## Troubleshooting
+
+- **unattended-upgrades never seems to run:** the apt-daily timers fire with randomized delays, so "it did not run at midnight" is usually just the delay. `journalctl -u apt-daily-upgrade.service` shows the real runs; `sudo unattended-upgrade -v` forces one now.
+- **A run hangs on a config-file question:** an interactive conffile prompt has no one to answer it. Keep automation on security-only (rarely touches configs) and take conffile-heavy upgrades in the window, where you are present to answer.
+- **dnf-automatic runs but nothing installs:** `apply_updates = no` (the download-only trap), or no packages carry security advisories right now. `journalctl -u dnf-automatic.service` states which.
+- **A service broke after the window:** that is what the snapshot is for, revert, then re-apply minus the offender (`apt-mark hold <pkg>` on Ubuntu, `dnf upgrade --exclude=<pkg>` on Rocky) and file the fix for next window.
+- **`dnf history undo` refuses:** a later transaction depends on the one you are undoing. Undo the later one first, or fall back to the snapshot.
+- **The reboot-required loop lies clear but the dashboard shows an old kernel:** compare `uname -r` against the newest installed kernel package. Belt and suspenders on the hosts you care most about.
+
+<Aside type="caution" title="Rollback">
+To back out the automation itself: on Ubuntu hosts, set both values in `20auto-upgrades` to `"0"` (or remove `unattended-upgrades`); on Rocky, `sudo systemctl disable --now dnf-automatic.timer`. Manual patching in windows continues to work untouched. Or revert the `pre-patching` snapshots.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> a fleet that closes its own security holes nightly, takes riskier changes only inside a rehearsed window, and can prove both to an auditor from one directory on the collector. The chain now runs end to end: hardened access, domain identity, DNS, restore-tested backups, central logs, live monitoring, and self-maintaining servers. That is not a pile of VMs. That is a managed network.
+</div>

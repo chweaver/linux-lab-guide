@@ -1,0 +1,289 @@
+---
+title: Centralized Logging with rsyslog
+description: Stand up a central syslog collector on a new ops server and forward logs from ubuntu-base and rocky-base to it over TCP with disk-backed queues, then read the aggregate the way a SOC would, brute-force hunting included.
+labId: syslog
+labOrder: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Host:** `ops01` (Ubuntu Server 24.04, `192.168.200.20`, LAB200) as the **collector**. **Senders:** `ubuntu-base` (`192.168.100.10`) and `rocky-base` (`192.168.200.12`).
+
+## Objective
+
+Build a central log collector: every auth failure, ban, and service error from the Linux fleet lands in one place, sorted by host, forwarded over TCP with a disk-backed queue so a collector outage loses nothing. Then use the aggregate to do what Security+ calls log analysis: spot a brute-force attempt across hosts without touching the hosts themselves.
+
+**Why it matters for an MSP:** you cannot SSH into thirty client servers to read thirty scattered logs, and an attacker who owns a box can edit the logs on it. Central logging is how an MSP answers "what happened, and when" with evidence that lives off the compromised machine. It is also the foundation every SIEM sits on; rsyslog forwarding is the plumbing underneath Wazuh, Graylog, and friends.
+
+**Prerequisites:**
+
+- [Lab 1](/linux-lab-guide/labs/01-ssh-hardening/) done. You will apply the same hardening to `ops01`, and its fail2ban events become the material you analyze here.
+- [Lab 3](/linux-lab-guide/labs/03-bind9-dns/) done. The senders forward to the collector **by name**, using the `lab.local` zone you built on `rocky-base`.
+- A new Ubuntu Server 24.04 VM for `ops01` on LAB200 at `192.168.200.20`, with a sudo-capable user.
+- pfSense permitting `ubuntu-base` to reach `192.168.200.20:514/tcp` (same LAN-to-LAB200 pattern as the existing SSH permit).
+- A snapshot named `pre-syslog` on all three hosts.
+
+## Phase A: Provision ops01 and register it in DNS
+
+**Status:** Not started.
+
+`ops01` is the first host this guide adds to the network, and it gets no shortcuts: it goes through the Lab 1 treatment before it does anything else.
+
+### Harden it like you mean it
+
+Repeat Lab 1 on `ops01`, exactly as written: key-based auth proven first, the `99-hardening.conf` drop-in, the `sshusers` group, ufw with SSH allowed, fail2ban with the same `jail.local`. This is the point of writing hardening down as a procedure, the second server costs a fraction of the first.
+
+```bash
+ssh vybz@192.168.200.20 "echo ok: $(hostname)"
+```
+
+Expected: `ok: ops01` over key auth, passwords refused. If any Lab 1 validation step fails here, fix it before continuing.
+
+### Add ops01 to the lab.local zone
+
+The senders will forward to `ops01.lab.local`, not to a bare IP, so the resolver from Lab 3 has to know the name. On `rocky-base`, add records to both zone files and **bump both serials**:
+
+```text title="/var/named/lab.local.zone" {5}
+ns1     IN  A   192.168.200.12
+rocky   IN  A   192.168.200.12
+ubuntu  IN  A   192.168.100.10
+ops01   IN  A   192.168.200.20
+```
+
+```text title="/var/named/200.168.192.rev" {2}
+12  IN  PTR rocky.lab.local.
+20  IN  PTR ops01.lab.local.
+```
+
+Reload and confirm:
+
+```bash
+sudo named-checkzone lab.local /var/named/lab.local.zone
+sudo rndc reload
+dig @192.168.200.12 ops01.lab.local +short
+```
+
+Expected: `192.168.200.20`. If the answer is stale, you forgot the serial bump, Lab 3's troubleshooting list called it.
+
+### Make the Lab 3 resolver the real resolver
+
+For names to work in a forwarding rule, each sender must use `rocky-base` for DNS permanently, not just in a validation test. On `ubuntu-base`, set the netplan nameserver to `192.168.200.12` and apply; on `rocky-base`, point its own resolution at `127.0.0.1`. This costs nothing: Lab 3's conditional forward means `corp.lab` still resolves through the DC, so Samba keeps working.
+
+```bash
+resolvectl status | grep -A2 "DNS Servers"
+dig dc01.corp.lab +short && dig ops01.lab.local +short
+```
+
+Expected: both names answer from every Linux host. The resolver you built in Lab 3 just became infrastructure.
+
+## Phase B: The collector
+
+**Status:** Not started.
+
+rsyslog is already on Ubuntu; you are turning on its TCP listener and telling it to file remote messages by host. All of it goes in a drop-in, same discipline as Lab 1's sshd config.
+
+```text title="/etc/rsyslog.d/10-collector.conf (on ops01)"
+# Accept syslog over TCP on 514
+module(load="imtcp")
+input(type="imtcp" port="514")
+
+# One file per remote host and program
+template(name="PerHost"
+         type="string"
+         string="/var/log/central/%HOSTNAME%/%PROGRAMNAME%.log")
+
+if ($fromhost-ip != "127.0.0.1") then {
+    action(type="omfile" dynaFile="PerHost" dirCreateMode="0755" fileCreateMode="0640")
+    stop
+}
+```
+
+- `module(load="imtcp")` and `input(...)`: load the TCP input and listen on 514. TCP, not UDP: UDP syslog (`imudp`) is fire-and-forget, a dropped packet is a lost log line and nobody is told. TCP gives delivery a fighting chance and lets the sender queue on failure.
+- `template(... string="/var/log/central/%HOSTNAME%/%PROGRAMNAME%.log")`: a **dynamic file path** built from message properties. Each host gets a directory, each program its own file, so `sshd` noise from one box never buries another's.
+- `if ($fromhost-ip != "127.0.0.1")`: only remote messages take this path; `ops01`'s own logs keep their normal local files.
+- `dynaFile="PerHost"`: use the template as the filename, creating directories as needed (`dirCreateMode`). `fileCreateMode="0640"` keeps logs unreadable to random local users.
+- `stop`: end processing for these messages, so remote logs do not also get mixed into `ops01`'s own `/var/log/syslog`.
+
+Validate before restarting, the rsyslog equivalent of `sshd -t`:
+
+```bash
+sudo rsyslogd -N1
+sudo systemctl restart rsyslog
+```
+
+- `-N1` runs a config check at verbosity 1 and exits without touching the running daemon.
+
+Open the port, but only to the lab subnets:
+
+```bash
+sudo ufw allow from 192.168.100.0/24 to any port 514 proto tcp
+sudo ufw allow from 192.168.200.0/24 to any port 514 proto tcp
+```
+
+A syslog port open to everything is an invitation to log spoofing and disk-fill, scope it to the networks that should speak.
+
+Finally, keep the aggregate from eating the disk:
+
+```text title="/etc/logrotate.d/central (on ops01)"
+/var/log/central/*/*.log {
+    weekly
+    rotate 12
+    compress
+    missingok
+    notifempty
+}
+```
+
+Twelve weekly rotations is a quarter of history, enough for "when did this start" questions without unbounded growth.
+
+## Phase C: The senders
+
+**Status:** Not started.
+
+The same drop-in goes on **both** `ubuntu-base` and `rocky-base`. Modern rsyslog action syntax, one block:
+
+```text title="/etc/rsyslog.d/90-forward.conf (on both senders)"
+action(
+  type="omfwd"
+  target="ops01.lab.local"
+  port="514"
+  protocol="tcp"
+
+  # Survive collector outages: spool to disk and retry forever
+  queue.type="LinkedList"
+  queue.filename="fwd-ops01"
+  queue.maxDiskSpace="100m"
+  queue.saveOnShutdown="on"
+  action.resumeRetryCount="-1"
+)
+```
+
+- `type="omfwd"` with `protocol="tcp"`: forward everything over TCP. (The old shorthand is `@@host:514`; one `@` would be UDP. The action block reads better and holds the queue settings.)
+- `target="ops01.lab.local"`: the name from Phase A. If DNS breaks, forwarding breaks, which is a feature: your logging now honestly depends on the resolver you run, the way real infrastructure does.
+- `queue.type="LinkedList"` with `queue.filename`: a **disk-assisted queue**. While the collector is reachable, messages stream through memory; when it is not, they spill to spool files under `/var/spool/rsyslog` instead of being dropped.
+- `queue.maxDiskSpace="100m"`: cap the spool so a long outage cannot fill the disk.
+- `queue.saveOnShutdown="on"`: flush queued messages to disk on shutdown, so a reboot mid-outage loses nothing.
+- `action.resumeRetryCount="-1"`: retry forever. The default gives up after a while and discards, which is the wrong behavior for security logs.
+
+Validate and restart on each sender:
+
+```bash
+sudo rsyslogd -N1
+sudo systemctl restart rsyslog
+```
+
+Nothing extra is needed on the Rocky side for SELinux or firewalld: outbound connections are not confined the way listeners are, and 514 is already a known syslog port type.
+
+<Aside type="tip" title="Why pull the logs off-host at all">
+An attacker's first cleanup task is `/var/log`. Forwarding in near-real time means the evidence has already left by the time they get there, and the collector's copy disagreeing with the host's copy is itself an indicator. This is why "logs stored centrally" shows up in every compliance framework you will ever be audited against.
+</Aside>
+
+## Phase D: Read the aggregate like a SOC
+
+**Status:** Not started.
+
+The collector is only useful if you can interrogate it. All of this runs on `ops01`, no logins to the fleet required.
+
+See what is arriving:
+
+```bash
+ls /var/log/central/
+ls /var/log/central/ubuntu-base/
+```
+
+Expected: one directory per sender, files like `sshd.log`, `fail2ban.log`, `sudo.log`, `cron.log` appearing as those programs speak.
+
+### Hunt a brute force
+
+Generate the attack yourself: from a host outside fail2ban's `ignoreip`, throw a handful of bogus SSH logins at `ubuntu-base` (`ssh nosuchuser@192.168.100.10`, wrong on purpose, several times). Then, on `ops01`:
+
+```bash
+grep "Invalid user" /var/log/central/ubuntu-base/sshd.log | awk '{print $(NF-2)}' | sort | uniq -c | sort -rn
+```
+
+- `grep "Invalid user"`: with passwords disabled since Lab 1, failed probes show up as invalid-user and connection-closed lines rather than "Failed password".
+- `awk '{print $(NF-2)}'`: the lines end in `from <ip> port <port>`, so the third field from the end is the source IP.
+- `sort | uniq -c | sort -rn`: count occurrences per IP and rank them. This one pipeline, attempts-per-source ranked, is the core move of log analysis, and it works the same on a SIEM's query bar.
+
+Now confirm the response fired, from the collector's copy of the fail2ban log:
+
+```bash
+grep "Ban" /var/log/central/ubuntu-base/fail2ban.log
+```
+
+Expected: a `Ban <your-ip>` line. You just watched detection (sshd log), aggregation (rsyslog), and response (fail2ban, from Lab 1) as one chain of custody, on a machine the "attacker" never touched. Unban yourself with `fail2ban-client` as in Lab 1.
+
+### Watch a login trail end to end
+
+```bash
+tail -f /var/log/central/rocky-base/sshd.log
+```
+
+SSH into `rocky-base` from your workstation and watch the accepted-publickey line arrive on `ops01` within a second or two. `tail -f` follows the file as it grows; this is your poor-man's live SOC view.
+
+## Phase E: Validation
+
+**Status:** Not started.
+
+### Every sender lands in its own directory
+
+On each sender, emit a tagged test message:
+
+```bash
+logger -t labtest "central logging check from $(hostname)"
+```
+
+- `logger` injects a message into syslog as if a program logged it; `-t labtest` sets the program tag, which the collector's template turns into the filename.
+
+On `ops01`:
+
+```bash
+grep -H "central logging check" /var/log/central/*/labtest.log
+```
+
+Expected: one hit under `ubuntu-base/` and one under `rocky-base/`, each naming its own hostname. `-H` prints the filename, proving the per-host sort.
+
+### An outage loses nothing (the queue test)
+
+Prove the disk queue earns its config. On `ops01`, stop the collector:
+
+```bash
+sudo systemctl stop rsyslog
+```
+
+On `ubuntu-base`, log three messages while the collector is down:
+
+```bash
+logger -t queuetest "message 1 during outage"
+logger -t queuetest "message 2 during outage"
+logger -t queuetest "message 3 during outage"
+```
+
+Start the collector again and check:
+
+```bash
+sudo systemctl start rsyslog
+sleep 5 && grep "during outage" /var/log/central/ubuntu-base/queuetest.log
+```
+
+Expected: **all three messages**, delivered after the fact from the sender's disk queue. This is the difference between logging that works and logging that works when it matters.
+
+### A real security event arrives without touching the host
+
+Repeat one bogus SSH attempt against `rocky-base` and confirm the invalid-user line appears in `/var/log/central/rocky-base/sshd.log` on `ops01`. One event, witnessed off-host, is the lab's proof.
+
+## Troubleshooting
+
+- **Nothing arrives from a sender:** check the path in order. `dig ops01.lab.local +short` on the sender (DNS), `nc -vz ops01.lab.local 514` (reachability, pfSense and ufw), then `sudo rsyslogd -N1` on both ends. LAN-to-LAB200 traffic needs the pfSense permit from the prerequisites.
+- **Logs arrive under an IP or the wrong name:** the collector files by the hostname the sender reports. Fix the sender's hostname (`hostnamectl`) or accept the name it gives; do not chase it with template hacks.
+- **`ops01`'s own logs show up under `/var/log/central`:** your `fromhost-ip` guard is missing or the `stop` is above the action. Remote-only filing depends on both.
+- **Spool files piling up in `/var/spool/rsyslog`:** the sender cannot reach the collector and is queuing as designed. Fix reachability; the queue drains itself.
+- **Everything works until a reboot:** ufw rules not saved, or the drop-in landed in the wrong directory. `ufw status` and `ls /etc/rsyslog.d/` after boot.
+
+<Aside type="caution" title="Rollback">
+On the senders, remove `/etc/rsyslog.d/90-forward.conf` and restart rsyslog; local logging is untouched. On `ops01`, remove `10-collector.conf`, close 514 in ufw, and delete `/var/log/central` if you want the disk back. Or revert the `pre-syslog` snapshots. The DNS records for `ops01` can stay, Lab 6 uses them.
+</Aside>
+
+<div class="unlocked">
+<strong>What this unlocked:</strong> one place where the whole fleet's story is told, on a hardened host the fleet cannot edit, with delivery that survives outages. You can now answer "who tried to get in, where, and when" from a single terminal. Next, <a href="/linux-lab-guide/labs/06-monitoring/">Lab 6</a> gives the same fleet a live metrics view, Prometheus and Grafana riding on Docker.
+</div>

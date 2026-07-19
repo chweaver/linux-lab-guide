@@ -81,6 +81,15 @@ export const nodes: TopoNode[] = [
     role: 'BIND9 + rsync target',
     labs: ['bind9', 'rsync'],
   },
+  {
+    id: 'ops01',
+    type: 'server',
+    label: 'ops01',
+    ip: '192.168.200.20',
+    subnet: 'lab200',
+    role: 'Syslog collector + monitoring (Docker)',
+    labs: ['syslog', 'monitoring', 'patching'],
+  },
 ];
 
 export const edges: TopoEdge[] = [
@@ -88,4 +97,5 @@ export const edges: TopoEdge[] = [
   { source: 'pfsense', target: 'ws01' },
   { source: 'pfsense', target: 'ubuntu' },
   { source: 'pfsense', target: 'rocky' },
+  { source: 'pfsense', target: 'ops01' },
 ];

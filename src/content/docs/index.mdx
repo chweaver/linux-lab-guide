@@ -1,6 +1,6 @@
 ---
 title: Linux Lab Guide
-description: An exhaustive, hands-on Linux homelab build, SSH hardening through automated backups, built as one coherent multi-server network that mirrors a real small-business shop.
+description: An exhaustive, hands-on Linux homelab build, SSH hardening through automated patching, built as one coherent multi-server network that mirrors a real small-business shop.
 template: doc
 tableOfContents: true
 ---
@@ -8,7 +8,7 @@ tableOfContents: true
 import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
 import LabStatusBoard from '../../components/LabStatusBoard.astro';
 
-A complete, reproducible Linux homelab in four labs. Not four disconnected tutorials: **one coherent multi-server build** that bridges Linux into the Active Directory domain from my [AD lab](https://chweaver.github.io/ad-lab-guide/) and mirrors how a real small-business network is run by an MSP.
+A complete, reproducible Linux homelab in seven labs. Not seven disconnected tutorials: **one coherent multi-server build** that bridges Linux into the Active Directory domain from my [AD lab](https://chweaver.github.io/ad-lab-guide/) and mirrors how a real small-business network is run by an MSP.
 
 Every command is explained (flags included), every phase ends with explicit validation, and the per-phase status below reads from the guide itself, so the [portfolio topology](https://chweaver.github.io/portfolio/) lights up a server the moment its lab is done.
 
@@ -36,12 +36,24 @@ The labs are ordered deliberately. Each one builds on the last, the way a real e
   <Card title="4 · Backups: rsync + cron" icon="seti:shell">
     Rocky becomes the backup server. Incremental, space-efficient, logged, scheduled backups **over the hardened SSH from Lab 1**, with a proven restore. The 3-2-1 rule, made real.
   </Card>
+  <Card title="5 · Centralized Logging" icon="seti:pipeline">
+    A new `ops01` server collects rsyslog from the fleet over TCP with disk-backed queues, **forwarding by the DNS names from Lab 3**. Then the aggregate gets read like a SOC would: brute-force hunting across hosts, off-host evidence included.
+  </Card>
+  <Card title="6 · Monitoring: Prometheus + Grafana" icon="seti:docker">
+    `node_exporter` on every host, Prometheus and Grafana deployed **end to end with Docker Compose on ops01**, scraping by Lab 3's names. Dashboards, a provable failure-detection test, and a stack that survives a reboot.
+  </Card>
+  <Card title="7 · Automated Patching + Rollback" icon="seti:clock">
+    Security updates apply themselves nightly (`unattended-upgrades`, `dnf-automatic`); everything else waits for a **snapshot-first patch window** verified against Lab 4's backups, with the rollback rehearsed, not hoped for.
+  </Card>
 </CardGrid>
 
 How the chain links up:
 
 - **Lab 1 enables Lab 4.** The backup job in Lab 4 logs in with a key generated and hardened in Lab 1, locked down with a forced `rrsync` command so a stolen key can only pull one read-only path.
 - **Labs 2 and 3 both integrate with Active Directory.** Samba joins the `corp.lab` domain (Lab 2) and BIND9 forwards `corp.lab` lookups to the domain controller (Lab 3). Both lean on the DC01 that already exists in the [AD lab](https://chweaver.github.io/ad-lab-guide/).
+- **Lab 5 makes Lab 3's resolver load-bearing.** The senders forward logs to `ops01.lab.local` by name, through records added to the zone built in Lab 3, and the new `ops01` host goes through the full Lab 1 hardening before it collects anything.
+- **Lab 6 scrapes by name and hides behind Lab 1.** Prometheus resolves its targets through the Lab 3 resolver, and its unauthenticated admin UI is reachable only over an SSH tunnel through the hardened access from Lab 1.
+- **Lab 7 closes the loop.** No patch window opens without a snapshot and a verified Lab 4 backup, patch runs leave their audit trail in Lab 5's central logs, and Lab 6's dashboards watch each host come back after a reboot.
 
 ## The network this builds
 
@@ -54,6 +66,7 @@ Two routed subnets behind pfSense, with the Linux servers slotting into the same
 | WS01 (Win 11) | LAN | 192.168.100.20 | (AD lab) |
 | ubuntu-base | LAN | 192.168.100.10 | **Labs 1 + 2** |
 | rocky-base | LAB200 | 192.168.200.12 | **Labs 3 + 4** |
+| ops01 | LAB200 | 192.168.200.20 | **Labs 5 + 6 + 7** |
 
 See the [full interactive topology](/linux-lab-guide/topology/), which marks each server done as you complete its lab.
 
