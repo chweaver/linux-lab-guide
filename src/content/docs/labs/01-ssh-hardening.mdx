@@ -27,7 +27,7 @@ Every change in Phase B can lock you out if you get it wrong. The rule for the w
 
 ## Phase A: Key-based authentication
 
-**Status:** Not started.
+**Status:** Done.
 
 The goal of this phase is a working key login *before* you touch any server config. You never disable passwords until keys are proven.
 
@@ -103,7 +103,7 @@ ssh -v vybz@192.168.100.10 2>&1 | grep -Ei "offering|accepted|authentications"
 
 ## Phase B: Harden sshd
 
-**Status:** Not started.
+**Status:** Done.
 
 Now lock the daemon down. You will do all of it in a drop-in file, never by editing the stock `sshd_config`.
 
