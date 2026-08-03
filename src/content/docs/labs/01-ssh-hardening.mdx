@@ -311,6 +311,7 @@ Expected: the offending IP appears under "Banned IP list", then clears after the
 
 - **Locked out completely:** use the VM console (or revert the `pre-ssh-hardening` snapshot). At the console you can edit `/etc/ssh/sshd_config.d/99-hardening.conf`, run `sudo sshd -t`, and `sudo systemctl reload ssh`.
 - **Key works but still prompts for a password:** perms on `~/.ssh` (must be `700`) or `~/.ssh/authorized_keys` (must be `600`), or the directory is owned by the wrong user. Check with `ls -ld ~/.ssh` and `ssh -v` to see if the key is even offered.
+- **Password auth still works after hardening:** check for a cloud-init drop-in. Ubuntu cloud images ship `/etc/ssh/sshd_config.d/50-cloud-init.conf` with `PasswordAuthentication yes`, and for sshd the *first* directive wins — `50-` sorts before `99-hardening.conf`, so cloud-init's value takes precedence over yours. `sudo rm` the cloud-init file (or rename your drop-in so it sorts first), then `sudo sshd -t && sudo systemctl reload ssh`. Confirm with `sudo sshd -T | grep -i passwordauthentication`.
 - **`sshd -t` reports a syntax error:** it gives the exact file and line. A common cause is a typo in a `KexAlgorithms`/`Ciphers` value or a stray space.
 - **`AllowGroups` locked everyone out:** you reloaded before adding your user to `sshusers`. Recover at the console, run the `usermod -aG sshusers` command, and reload.
 - **ufw cut your session:** you enabled ufw before allowing SSH. Recover at the console with `sudo ufw allow OpenSSH`, or `sudo ufw disable` to back out entirely.
