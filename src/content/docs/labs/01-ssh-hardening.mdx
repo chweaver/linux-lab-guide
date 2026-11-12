@@ -161,7 +161,7 @@ sudo usermod -aG sshusers vybz
 - `usermod -aG` **appends** the group (the `-a` is essential, without it you replace all of the user's groups).
 
 <Aside type="note" title="On non-standard ports">
-Moving SSH off port 22 (for example `Port 2222`) cuts opportunistic scan noise but is obscurity, not security: it stops nothing that actually targets you. If you do it, you also have to open the new port in the firewall and, on Rocky, tell SELinux about it (see the appendix). Decide whether the log-noise reduction is worth the extra moving parts.
+Moving SSH off port 22 (for example `Port 2222`) cuts opportunistic scan noise but is obscurity, not security: it stops nothing that targets you. If you do it, you also have to open the new port in the firewall and, on Rocky, tell SELinux about it (see the appendix). Decide whether the log-noise reduction is worth the extra moving parts.
 </Aside>
 
 ### Test the config before applying it
@@ -266,9 +266,9 @@ Status for the jail: sshd
 
 ## Phase D: Validation
 
-**Status:** In progress.
+**Status:** Done.
 
-Prove every control actually holds. A hardening change you did not test is a guess.
+Prove every control holds. A hardening change you did not test is a guess.
 
 ### Key login still succeeds
 
@@ -311,11 +311,11 @@ Expected: the offending IP appears under "Banned IP list", then clears after the
 
 - **Locked out completely:** use the VM console (or revert the `pre-ssh-hardening` snapshot). At the console you can edit `/etc/ssh/sshd_config.d/99-hardening.conf`, run `sudo sshd -t`, and `sudo systemctl reload ssh`.
 - **Key works but still prompts for a password:** perms on `~/.ssh` (must be `700`) or `~/.ssh/authorized_keys` (must be `600`), or the directory is owned by the wrong user. Check with `ls -ld ~/.ssh` and `ssh -v` to see if the key is even offered.
-- **Password auth still works after hardening, and `sshd -t` passes:** check for a cloud-init drop-in. Ubuntu Server images ship `/etc/ssh/sshd_config.d/50-cloud-init.conf` containing `PasswordAuthentication yes`, and sshd keeps the *first* occurrence of a directive it reads — `50-` sorts before `99-`, so your `PasswordAuthentication no` in `99-hardening.conf` is silently ignored. Nothing is syntactically wrong, which is why `sshd -t` stays green. Fix: `sudo rm /etc/ssh/sshd_config.d/50-cloud-init.conf`, then `sudo sshd -t && sudo systemctl reload ssh`, and re-test that a password login is now refused (`ssh -o PubkeyAuthentication=no vybz@192.168.100.10` must fail).
+- **Password auth still works after hardening, and `sshd -t` passes:** check for a cloud-init drop-in. Ubuntu Server images ship `/etc/ssh/sshd_config.d/50-cloud-init.conf` containing `PasswordAuthentication yes`, and sshd keeps the *first* occurrence of a directive it reads: `50-` sorts before `99-`, so your `PasswordAuthentication no` in `99-hardening.conf` is silently ignored. Nothing is syntactically wrong, which is why `sshd -t` stays green. Fix: `sudo rm /etc/ssh/sshd_config.d/50-cloud-init.conf`, then `sudo sshd -t && sudo systemctl reload ssh`, and re-test that a password login is now refused (`ssh -o PubkeyAuthentication=no vybz@192.168.100.10` must fail).
 - **`sshd -t` reports a syntax error:** it gives the exact file and line. A common cause is a typo in a `KexAlgorithms`/`Ciphers` value or a stray space.
 - **`AllowGroups` locked everyone out:** you reloaded before adding your user to `sshusers`. Recover at the console, run the `usermod -aG sshusers` command, and reload.
 - **ufw cut your session:** you enabled ufw before allowing SSH. Recover at the console with `sudo ufw allow OpenSSH`, or `sudo ufw disable` to back out entirely.
-- **VMware host adapter bypasses pfSense:** discovered during fail2ban validation — the Windows host's VMnet1 host-only adapter sits at `192.168.100.200`, directly on the LAN subnet. Host-to-lab traffic takes that directly connected route and never traverses pfSense, so the firewall rules do not apply to it — and `192.168.100.200` falls inside fail2ban's `ignoreip`, so the host cannot play attacker for ban tests. Use a lab VM as the attack source instead. To-do: constrain VMnet1 so host traffic is forced through pfSense.
+- **VMware host adapter bypasses pfSense:** discovered during fail2ban validation. The Windows host's VMnet1 host-only adapter sits at `192.168.100.200`, directly on the LAN subnet. Host-to-lab traffic takes that directly connected route and never traverses pfSense, so the firewall rules do not apply to it, and `192.168.100.200` falls inside fail2ban's `ignoreip`, so the host cannot play attacker for ban tests. Use a lab VM as the attack source instead. To-do: constrain VMnet1 so host traffic is forced through pfSense.
 
 <Aside type="caution" title="Rollback">
 To undo this lab cleanly: `sudo rm /etc/ssh/sshd_config.d/99-hardening.conf && sudo sshd -t && sudo systemctl reload ssh` restores stock auth. `sudo ufw disable` drops the firewall. `sudo systemctl disable --now fail2ban` stops banning. Or simply revert the `pre-ssh-hardening` snapshot.
