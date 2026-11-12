@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-08-03T03:47:38.417249+00:00",
+  "generatedAt": "2026-11-12T23:29:48.176632+00:00",
   "guideBaseUrl": "https://chweaver.github.io/linux-lab-guide/",
   "summary": {
     "totalLabs": 7,
-    "labsComplete": 0,
+    "labsComplete": 1,
     "totalPhases": 34,
-    "phasesDone": 3,
-    "phasesNext": 1,
+    "phasesDone": 4,
+    "phasesNext": 0,
     "phasesPlanned": 30,
-    "overallPct": 9
+    "overallPct": 12
   },
   "labs": [
     {
@@ -16,10 +16,10 @@
       "title": "SSH Hardening + Key Auth",
       "order": 1,
       "path": "labs/01-ssh-hardening/",
-      "status": "next",
-      "pct": 75,
+      "status": "done",
+      "pct": 100,
       "phasesTotal": 4,
-      "phasesDone": 3
+      "phasesDone": 4
     },
     {
       "id": "samba",
@@ -112,7 +112,7 @@
       "labId": "ssh",
       "labTitle": "SSH Hardening + Key Auth",
       "title": "Phase D: Validation",
-      "status": "next",
+      "status": "done",
       "anchor": "phase-d-validation"
     },
     {
